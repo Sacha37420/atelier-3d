@@ -1,0 +1,58 @@
+.viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--card);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.hint {
+  font-size: var(--text-sm);
+  color: var(--text-mute);
+}
+
+.btn-ghost {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  cursor: pointer;
+
+  &.active { background: var(--accent-tint); color: var(--accent-deep); border-color: var(--accent); }
+  &:hover { border-color: var(--accent); }
+}
+
+.canvas-host {
+  position: relative;
+  flex: 1;
+  min-height: 380px;
+
+  canvas { display: block; }
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-mute);
+  font-size: var(--text-sm);
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+
+  &.error { color: var(--danger); }
+}

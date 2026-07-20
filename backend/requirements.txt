@@ -1,0 +1,21 @@
+Django>=5.0,<6.0
+djangorestframework>=3.15
+drf-spectacular[sidecar]>=0.26
+python-decouple>=3.8
+psycopg2-binary>=2.9
+PyJWT>=2.8
+cryptography>=40.0
+django-cors-headers>=3.14.0
+
+# ── File de tâches asynchrones (reconstruction 3D, calculs longs) ──────────────
+celery>=5.3
+redis>=5.0
+
+# ── Traitement 3D (Lot 0 : COLMAP/OpenMVS CPU-only compilés dans le Dockerfile) ─
+Pillow>=10.0
+trimesh>=4.0
+open3d>=0.18
+pymeshlab>=2023.12
+pyransac3d>=0.6
+numpy
+scipy

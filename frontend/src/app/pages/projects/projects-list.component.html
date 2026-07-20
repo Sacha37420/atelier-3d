@@ -1,0 +1,44 @@
+<main class="page-projects">
+  <h2>Projets de reconstruction</h2>
+
+  <form class="new-project" (ngSubmit)="createProject()">
+    <input type="text" name="name" placeholder="Nom du projet…" [(ngModel)]="newName" required />
+    <select name="type" [(ngModel)]="newType">
+      <option value="objet">Objet</option>
+      <option value="batiment">Bâtiment</option>
+    </select>
+    <button type="submit" class="btn-primary" [disabled]="creating() || !newName.trim()">
+      {{ creating() ? 'Création…' : '+ Nouveau projet' }}
+    </button>
+  </form>
+
+  @if (error()) {
+    <p class="error">{{ error() }}</p>
+  }
+
+  @if (loading()) {
+    <p class="muted">Chargement…</p>
+  } @else if (projects().length === 0) {
+    <p class="muted">Aucun projet pour l'instant — dépose des photos pour commencer.</p>
+  } @else {
+    <div class="grid">
+      @for (p of projects(); track p.id) {
+        <a class="card" [routerLink]="['/projects', p.id]">
+          <h3>{{ p.name }}</h3>
+          <div class="badges">
+            <span class="badge">{{ p.project_type === 'batiment' ? 'Bâtiment' : 'Objet' }}</span>
+            <span class="badge">{{ p.photo_count }} photo(s)</span>
+            @if (p.has_scale) {
+              <span class="badge success">Échelle calibrée</span>
+            } @else {
+              <span class="badge warning">Échelle arbitraire</span>
+            }
+            @if (p.has_active_job) {
+              <span class="badge accent">Job en cours…</span>
+            }
+          </div>
+        </a>
+      }
+    </div>
+  }
+</main>

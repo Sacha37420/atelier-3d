@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Atelier 3d</title>
+  <base href="/" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <script>
+    /* Anti-flash : lit le thème choisi avant le premier rendu Angular.
+       Doit rester cohérent avec ThemeService (core/theme.service.ts). */
+    (function () {
+      var stored = localStorage.getItem('foyer-theme');
+      var theme = stored || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+  <!-- Variables d'environnement injectées avant le bundle Angular -->
+  <script src="assets/env.js"></script>
+</head>
+<body>
+  <app-root></app-root>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<div class="viewer">
+  <div class="toolbar">
+    <button type="button" class="btn-ghost" [class.active]="wireframe()" (click)="toggleWireframe()">
+      Filaire
+    </button>
+    @if (calibrationMode) {
+      <span class="hint">
+        @if (pickedCount() === 0) { Cliquer un premier point de référence sur le maillage… }
+        @if (pickedCount() === 1) { Cliquer un second point… }
+        @if (pickedCount() >= 2) { Distance mesurée — voir le formulaire ci-dessous. }
+      </span>
+      <button type="button" class="btn-ghost" (click)="clearPicks()">Effacer les points</button>
+    }
+  </div>
+
+  <div #canvasHost class="canvas-host">
+    @if (loading()) {
+      <div class="overlay">Chargement du maillage…</div>
+    }
+    @if (loadError()) {
+      <div class="overlay error">{{ loadError() }}</div>
+    }
+  </div>
+</div>

@@ -1,0 +1,16 @@
+<main class="page-home">
+  <div class="hero-card">
+    <h2>Bonjour, <strong>{{ username }}</strong> 👋</h2>
+    <p class="email">{{ email }}</p>
+
+    @if (groups.length > 0) {
+      <div class="groups">
+        @for (g of groups; track g) {
+          <span class="badge">{{ g }}</span>
+        }
+      </div>
+    }
+
+    <a routerLink="/profile" class="btn-primary">Voir mon profil →</a>
+  </div>
+</main>

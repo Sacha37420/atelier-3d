@@ -1,0 +1,90 @@
+version: "3.9"
+
+# Le démon Docker de ce lab est distant (filesystem séparé de l'hôte code-server) :
+# les bind mounts de code sont inertes, tout le code est baké dans les images
+# (COPY dans les Dockerfiles) — toute modif nécessite un rebuild.
+
+networks:
+  sso-net:
+    external: true
+    name: sso-lab_sso-net
+  dev-net:
+    external: true
+    name: dev-net
+  atelier3d-net:
+    driver: bridge
+
+volumes:
+  # Photos sources, nuages de points intermédiaires et maillages (plusieurs Go
+  # par projet) — déclaré 'external' pour survivre à clean2.sh (down --volumes).
+  atelier3d-media:
+    external: true
+    name: atelier-3d_atelier3d-media
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: atelier-3d-redis
+    restart: unless-stopped
+    networks:
+      - atelier3d-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    container_name: atelier-3d-backend
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8092:8000"
+    networks:
+      - sso-net
+      - dev-net
+      - atelier3d-net
+    volumes:
+      - atelier3d-media:/app/media
+    labels:
+      caddy: "${DOMAIN}"
+      caddy.handle_path: "/atelier-3d-api/*"
+      caddy.handle_path.reverse_proxy: "{{upstreams 8000}}"
+
+  worker:
+    build: ./backend
+    container_name: atelier-3d-worker
+    restart: unless-stopped
+    env_file: .env
+    # Un seul job lourd actif à la fois pour toute l'app (verrou global, cf.
+    # to_do_3D.md) : concurrency=1 est le filet de sécurité derrière le verrou
+    # applicatif DB posé dans ReconstructionLaunchView. Le CPU (2 vCPU) est
+    # partagé avec le reste du lab.
+    command: celery -A config worker --loglevel=info --concurrency=1
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - dev-net   # pour atteindre l'instance Postgres partagée
+      - atelier3d-net
+    volumes:
+      - atelier3d-media:/app/media
+
+  frontend:
+    build: ./frontend
+    container_name: atelier-3d-frontend
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "4210:80"
+    networks:
+      - sso-net
+    labels:
+      caddy: "${DOMAIN}"
+      caddy.handle_path: "/atelier-3d/*"
+      caddy.handle_path.reverse_proxy: "{{upstreams 80}}"

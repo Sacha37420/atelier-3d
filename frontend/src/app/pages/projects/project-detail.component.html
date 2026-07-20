@@ -1,0 +1,144 @@
+<main class="page-project">
+  @if (loading()) {
+    <p class="muted center">Chargement…</p>
+  } @else if (project(); as project) {
+    <a routerLink="/projects" class="back">← Projets</a>
+
+    <header class="project-header">
+      <h2>{{ project.name }}</h2>
+      <div class="badges">
+        <span class="badge">{{ project.project_type === 'batiment' ? 'Bâtiment' : 'Objet' }}</span>
+        <span class="badge">{{ project.photo_count }} photo(s)</span>
+        @if (project.has_scale) {
+          <span class="badge success">Échelle calibrée ({{ project.scale_meters_per_unit }} m/unité)</span>
+        } @else {
+          <span class="badge warning">Échelle arbitraire — non calibrée</span>
+        }
+      </div>
+    </header>
+
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    }
+
+    <!-- ── Dépôt de photos / vidéo ────────────────────────────────────────── -->
+    <section class="card">
+      <h3>Photos</h3>
+      <div
+        class="dropzone"
+        [class.dragover]="dragOver()"
+        (dragover)="onDragOver($event)"
+        (dragleave)="onDragLeave()"
+        (drop)="onDrop($event)"
+      >
+        @if (uploading()) {
+          <p>Envoi en cours…</p>
+        } @else {
+          <p>Glisser-déposer des photos ou une vidéo ici</p>
+          <div class="dropzone-actions">
+            <label class="btn-ghost">
+              Choisir des photos…
+              <input type="file" accept="image/*" multiple (change)="onPhotoInputChange($event)" hidden />
+            </label>
+            <label class="btn-ghost">
+              Choisir une vidéo…
+              <input type="file" accept="video/*" (change)="onVideoInputChange($event)" hidden />
+            </label>
+          </div>
+        }
+      </div>
+
+      @if (project.photos.length > 0) {
+        <div class="photo-grid">
+          @for (photo of project.photos; track photo.id) {
+            <div class="thumb" [class.resolved]="photo.pose_resolved" [class.unresolved]="photo.camera_pose === null && lastFinishedJob()?.kind === 'RECONSTRUCTION'">
+              <img [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
+              <button type="button" class="thumb-remove" (click)="deletePhoto(photo.id)" title="Retirer">✕</button>
+            </div>
+          }
+        </div>
+      }
+    </section>
+
+    <!-- ── Reconstruction ───────────────────────────────────────────────────── -->
+    <section class="card">
+      <h3>Reconstruction</h3>
+
+      @if (activeJob(); as job) {
+        <div class="job-progress">
+          <div class="bar"><div class="fill" [style.width.%]="job.progress"></div></div>
+          <p class="job-message">{{ job.message || 'En cours…' }} ({{ job.progress }}%)</p>
+        </div>
+      } @else {
+        <div class="presets">
+          @for (p of presets; track p) {
+            <button
+              type="button"
+              class="preset-btn"
+              [class.active]="selectedPreset() === p"
+              (click)="selectPreset(p)"
+            >
+              {{ presetLabels[p] }}
+            </button>
+          }
+        </div>
+
+        @if (estimate(); as est) {
+          <p class="estimate">
+            Estimation : <strong>{{ formatDuration(est.estimated_seconds) }}</strong> pour {{ est.n_photos }} photos.
+            @if (est.warning_threshold_exceeded) {
+              <span class="warning-text"> ⚠ dépasse 2h, envisager un preset plus rapide.</span>
+            }
+          </p>
+        }
+
+        <button
+          type="button"
+          class="btn-primary"
+          [disabled]="launching() || project.photo_count < 3"
+          (click)="launchReconstruction()"
+        >
+          {{ launching() ? 'Lancement…' : 'Lancer la reconstruction' }}
+        </button>
+        @if (project.photo_count < 3) {
+          <p class="hint">Au moins 3 photos sont nécessaires.</p>
+        }
+      }
+
+      @if (lastFinishedJob(); as job) {
+        <p class="last-job" [class.error]="job.status === 'ERROR'">{{ job.message }}</p>
+      }
+    </section>
+
+    <!-- ── Résultat + calibration ───────────────────────────────────────────── -->
+    @if (meshViewerUrl(); as url) {
+      <section class="card">
+        <div class="viewer-header">
+          <h3>Maillage (v{{ latestMesh()?.version }})</h3>
+          <button type="button" class="btn-ghost" [class.active]="calibrationMode()" (click)="toggleCalibration()">
+            {{ calibrationMode() ? 'Quitter la calibration' : 'Étalonner l\'échelle' }}
+          </button>
+        </div>
+
+        <app-mesh-viewer
+          [meshUrl]="url"
+          [calibrationMode]="calibrationMode()"
+          (measured)="onMeasured($event)"
+        ></app-mesh-viewer>
+
+        @if (pendingMeasurement(); as m) {
+          <div class="calibration-form">
+            <p>Distance mesurée : {{ m.meshDistance.toFixed(4) }} unités de maillage.</p>
+            <label>
+              Distance réelle (mètres) :
+              <input type="number" step="0.001" min="0" [(ngModel)]="realDistanceMeters" />
+            </label>
+            <button type="button" class="btn-primary" [disabled]="!realDistanceMeters" (click)="saveCalibration()">
+              Enregistrer l'échelle
+            </button>
+          </div>
+        }
+      </section>
+    }
+  }
+</main>

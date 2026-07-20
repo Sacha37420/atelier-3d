@@ -1,0 +1,109 @@
+<ng-template #navList let-onNavigate="onNavigate">
+  @for (item of navItems; track item.label) {
+    <a
+      [routerLink]="item.path"
+      routerLinkActive="active"
+      [routerLinkActiveOptions]="{ exact: item.exact ?? false }"
+      class="nav-link"
+      [title]="item.label"
+      (click)="onNavigate()"
+    >
+      <span class="nav-icon">{{ item.abbr }}</span>
+      <span class="nav-label">{{ item.label }}</span>
+    </a>
+  }
+</ng-template>
+
+<div class="shell">
+
+  <aside class="sidebar" [class.collapsed]="collapsed()">
+    <a routerLink="/" class="logo" title="Atelier 3d">
+      <span class="logo-badge">F</span>
+      <span class="logo-word">Atelier 3d</span>
+    </a>
+
+    <nav class="nav">
+      <ng-container *ngTemplateOutlet="navList; context: { onNavigate: noop }" />
+    </nav>
+
+    <div class="sidebar-footer">
+      <span class="user-badge" [title]="username">{{ username }}</span>
+      <div class="sidebar-footer-actions">
+        <button
+          class="icon-btn"
+          type="button"
+          (click)="theme.toggle()"
+          [attr.aria-label]="theme.theme() === 'dark' ? 'Passer en thème clair' : 'Passer en thème sombre'"
+          [title]="theme.theme() === 'dark' ? 'Thème clair' : 'Thème sombre'"
+        >{{ theme.theme() === 'dark' ? '☀' : '☾' }}</button>
+
+        <button class="icon-btn" type="button" (click)="logout()" aria-label="Déconnexion" title="Déconnexion">⏻</button>
+      </div>
+      <button
+        class="collapse-btn"
+        type="button"
+        (click)="toggleCollapsed()"
+        [attr.aria-expanded]="!collapsed()"
+        [title]="collapsed() ? 'Déployer le bandeau' : 'Réduire le bandeau'"
+      >
+        <span class="collapse-icon">{{ collapsed() ? '»' : '«' }}</span>
+        <span class="collapse-label">Réduire</span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="content">
+    <header class="topbar">
+      <a routerLink="/" class="logo" title="Atelier 3d">
+        <span class="logo-badge">F</span>
+        <span class="logo-word">Atelier 3d</span>
+      </a>
+
+      <div class="topbar-actions">
+        <button
+          class="icon-btn"
+          type="button"
+          (click)="theme.toggle()"
+          [attr.aria-label]="theme.theme() === 'dark' ? 'Passer en thème clair' : 'Passer en thème sombre'"
+        >{{ theme.theme() === 'dark' ? '☀' : '☾' }}</button>
+
+        <button
+          #burgerBtn
+          class="burger"
+          type="button"
+          (click)="openMobile()"
+          aria-label="Ouvrir le menu"
+          [attr.aria-expanded]="mobileOpen()"
+        >
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </header>
+
+    <main class="main">
+      <router-outlet />
+    </main>
+  </div>
+
+</div>
+
+@if (mobileOpen()) {
+  <div class="mobile-panel" [class.closing]="mobileClosing()" role="dialog" aria-modal="true" aria-label="Navigation">
+    <div class="mobile-panel-head">
+      <span class="logo">
+        <span class="logo-badge">F</span>
+        <span class="logo-word">Atelier 3d</span>
+      </span>
+      <button #closeBtn class="close-btn" type="button" (click)="closeMobile()" aria-label="Fermer le menu">✕</button>
+    </div>
+
+    <nav class="mobile-nav">
+      <ng-container *ngTemplateOutlet="navList; context: { onNavigate: closeMobileFn }" />
+    </nav>
+
+    <div class="mobile-panel-footer">
+      <span class="user-badge" [title]="username">{{ username }}</span>
+      <button class="logout-btn" type="button" (click)="logout()">Déconnexion</button>
+    </div>
+  </div>
+}

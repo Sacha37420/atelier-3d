@@ -1,0 +1,23 @@
+# ── Secrets / config locale ──────────────────────────────────────────────────
+.env
+.keycloak-client-opts
+
+# ── Python / Django ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+db.sqlite3
+# Photos/maillages — servis par volume Docker externe, jamais versionnés
+backend/media/
+
+# ── Angular / Node ───────────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.angular/
+frontend/node_modules/
+
+# ── Divers ───────────────────────────────────────────────────────────────────
+*.log
+.DS_Store

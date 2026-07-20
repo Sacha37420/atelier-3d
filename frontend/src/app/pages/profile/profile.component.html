@@ -1,0 +1,59 @@
+<main class="page-profile">
+  @if (loading()) {
+    <p class="loading">Chargement…</p>
+  } @else if (error()) {
+    <div class="error-card">{{ error() }}</div>
+  } @else if (me()) {
+
+    <section class="card">
+      <h3>Mon profil</h3>
+      <dl class="dl-grid">
+        <dt>Utilisateur</dt>  <dd>{{ me()!.username }}</dd>
+        <dt>E-mail</dt>       <dd>{{ me()!.email }}</dd>
+        <dt>Nom affiché</dt>  <dd>{{ me()!.display_name || '—' }}</dd>
+        <dt>Département</dt>  <dd>{{ me()!.department?.name ?? '—' }}</dd>
+        <dt>Inscrit le</dt>   <dd>{{ me()!.registered_at | date:'dd/MM/yyyy HH:mm' }}</dd>
+      </dl>
+
+      @if (me()!.groups.length > 0) {
+        <div class="groups">
+          @for (g of me()!.groups; track g) {
+            <span class="badge">{{ g }}</span>
+          }
+        </div>
+      }
+
+      @if (me()!.is_new) {
+        <p class="info-new">✨ Premier accès — profil créé automatiquement.</p>
+      }
+    </section>
+
+    <section class="card">
+      <h3>Utilisateurs enregistrés ({{ users().length }})</h3>
+      <table class="user-table">
+        <thead>
+          <tr>
+            <th>Nom</th>
+            <th>E-mail</th>
+            <th>Département</th>
+            <th>Inscrit le</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (u of users(); track u.email) {
+            <tr>
+              <td>{{ u.display_name }}</td>
+              <td>{{ u.email }}</td>
+              <td>{{ u.department?.name ?? '—' }}</td>
+              <td>{{ u.registered_at | date:'dd/MM/yyyy' }}</td>
+            </tr>
+          }
+          @if (users().length === 0) {
+            <tr><td colspan="4" class="empty">Aucun utilisateur enregistré.</td></tr>
+          }
+        </tbody>
+      </table>
+    </section>
+
+  }
+</main>

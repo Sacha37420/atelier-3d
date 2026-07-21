@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
+import { KeycloakService } from './keycloak.service';
 
 interface EnvWindow {
   __env?: { apiUrl?: string };
@@ -77,17 +78,24 @@ export interface ReconstructionEstimate {
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private http = inject(HttpClient);
+  private kc = inject(KeycloakService);
 
   get base(): string {
     return (window as unknown as EnvWindow).__env?.apiUrl
       ?? 'http://localhost:8092';
   }
 
-  /** URL absolue d'un fichier média (photo, maillage), utilisable telle quelle. */
+  /**
+   * URL absolue d'un fichier média (photo, maillage), utilisable telle quelle
+   * dans un <img> ou passée à GLTFLoader. Le JWT part en paramètre d'URL : ni
+   * une balise <img> ni le fetch() interne de GLTFLoader ne peuvent poser
+   * d'en-tête Authorization (cf. MediaView côté backend, api/views.py).
+   */
   mediaUrl(path: string | null): string {
     if (!path) return '';
     if (/^https?:\/\//.test(path)) return path;
-    return `${this.base}${path}`;
+    const token = this.kc.getToken();
+    return `${this.base}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
   }
 
   getMe(): Observable<unknown> {

@@ -2,8 +2,10 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from django.conf import settings
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.views.static import serve as django_static_serve
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import generics, status
@@ -85,6 +87,20 @@ class ProjectDetailView(generics.RetrieveUpdateAPIView):
 
     queryset = Project.objects.all()
     http_method_names = ['get', 'patch', 'head', 'options']
+
+    def get_serializer_context(self):
+        # Les vues génériques DRF injectent 'request' par défaut, ce qui fait
+        # que FileField (photos, maillages) sérialise en URL absolue via
+        # request.build_absolute_uri() — construite à partir du chemin déjà
+        # amputé du préfixe '/atelier-3d-api' par Caddy (handle_path le retire
+        # avant de transmettre à Django). Résultat : une URL absolue mais
+        # incomplète, que le frontend prend pour définitive (mediaUrl() ne
+        # préfixe/n'ajoute le token que sur un chemin relatif) et qui 404.
+        # Sans 'request' ici, FileField.url reste relatif ('/media/...') et
+        # c'est mediaUrl() côté frontend qui construit l'URL complète.
+        context = super().get_serializer_context()
+        context.pop('request', None)
+        return context
 
     def get_serializer_class(self):
         return ProjectDetailSerializer if self.request.method == 'GET' else ProjectSerializer
@@ -230,3 +246,16 @@ class JobDetailView(APIView):
             return Response(JobSerializer(Job.objects.get(pk=pk)).data)
         except Job.DoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
+
+
+class MediaView(APIView):
+    """
+    GET /media/<path> — photos et maillages, derrière la même authentification
+    que le reste de l'API (IsAuthenticated + KeycloakJWTAuthentication, y compris
+    le contrôle de groupe). Sans cette vue, ces fichiers étaient servis en clair
+    par django.views.static.serve, accessibles sans connexion à quiconque devine
+    l'URL — contraire au principe du lab (cf. CLAUDE.md, cloisonnement).
+    """
+
+    def get(self, request, path):
+        return django_static_serve(request._request, path, document_root=settings.MEDIA_ROOT)

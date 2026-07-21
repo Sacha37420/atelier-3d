@@ -79,12 +79,19 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
     const host = this.canvasHost.nativeElement;
     this.scene.background = new THREE.Color(0x14171f);
 
-    this.camera = new THREE.PerspectiveCamera(50, host.clientWidth / host.clientHeight, 0.001, 10000);
+    // Filet de sécurité : si la mise en page n'est pas encore résolue au moment
+    // exact où ngAfterViewInit tourne, clientWidth/Height peuvent lire 0 — un
+    // ratio d'aspect infini ou un canvas de hauteur nulle ne rendent plus rien
+    // tant que le premier ResizeObserver (onResize) ne corrige pas la taille.
+    const w = Math.max(1, host.clientWidth);
+    const h = Math.max(1, host.clientHeight);
+
+    this.camera = new THREE.PerspectiveCamera(50, w / h, 0.001, 10000);
     this.camera.position.set(1, 1, 1);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setSize(host.clientWidth, host.clientHeight);
+    this.renderer.setSize(w, h);
     host.appendChild(this.renderer.domElement);
 
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
@@ -133,6 +140,17 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
       url,
       (gltf) => {
         this.modelRoot = gltf.scene;
+        // Rendu double-face en sécurité : un maillage issu de reconstruction
+        // photogrammétrique peut avoir des normales/un sens de bouclage
+        // incohérents par endroits — le culling par défaut (FrontSide) rendrait
+        // alors certaines faces invisibles selon l'angle de caméra.
+        this.modelRoot.traverse((obj) => {
+          const mesh = obj as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+            (m as THREE.Material).side = THREE.DoubleSide;
+          }
+        });
         this.applyWireframe(this.wireframe());
         this.scene.add(this.modelRoot);
         this.frameCamera(this.modelRoot);

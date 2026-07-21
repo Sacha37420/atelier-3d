@@ -7,6 +7,7 @@ from drf_spectacular.views import SpectacularAPIView
 from drf_spectacular.views import SpectacularSwaggerView
 from django.conf import settings
 from django.utils.functional import cached_property
+from api.views import MediaView
 
 # Vue personnalisée Swagger UI
 class CustomSwaggerUIView(SpectacularSwaggerView):
@@ -37,6 +38,7 @@ urlpatterns = [
     path('api/docs/', CustomSwaggerUIView.as_view(), name='swagger-ui'),
     # Photos et maillages (volume externe monté sur MEDIA_ROOT) — chemin relatif
     # 'media/' : derrière Caddy (handle_path), le PATH_INFO côté Django commence
-    # déjà par 'media/'.
-    path('media/<path:path>', static_serve, {'document_root': settings.MEDIA_ROOT}),
+    # déjà par 'media/'. Authentifié (MediaView, cf. api/views.py) : pas de
+    # static_serve nu, sinon accessible sans connexion à quiconque devine l'URL.
+    path('media/<path:path>', MediaView.as_view()),
 ]

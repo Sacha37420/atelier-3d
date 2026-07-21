@@ -44,10 +44,14 @@ class KeycloakJWTAuthentication(BaseAuthentication):
 
     def authenticate(self, request):
         auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return None
-
-        token = auth_header[7:]
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+        else:
+            # Une balise <img>/GLTFLoader ne peut pas poser d'en-tête Authorization —
+            # fallback sur ?token=, utilisé uniquement par MediaView (cf. views.py).
+            token = request.GET.get('token', '')
+            if not token:
+                return None
 
         try:
             client = self._get_jwks_client()

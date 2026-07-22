@@ -78,12 +78,31 @@ RUN git clone --branch v2.3.0 --depth 1 https://github.com/cdcseacave/openMVS.gi
 ENV PATH="/usr/local/bin/OpenMVS:${PATH}"
 
 # --- ffmpeg (extraction de frames vidéo, Lot 1) + Python 3.12 + libs GL/X headless
-#     (requises par open3d/pymeshlab même sans affichage) + python-is-python3 pour
+#     (requises par pymeshlab même sans affichage) + python-is-python3 pour
 #     que `python manage.py` fonctionne comme sur le reste du lab ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg python3.12 python3-pip python-is-python3 \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
+
+# --- Segmentation 2D zero-shot (Lot 4, module Bâtiments) : FastSAM (ultralytics),
+#     torch/torchvision CPU-only. Wheel dédiée download.pytorch.org, PAS le
+#     wheel PyPI par défaut (embarque CUDA — inutile et bien plus volumineux
+#     sur ce matériel). Validé avant d'écrire ce module (cf. facade.py) : torch
+#     tourne sans crash sur le CPU cible (contrairement à open3d, Lot 2). curl +
+#     libxcb1 : requis par opencv-python (dépendance d'ultralytics), absent des
+#     libs GL headless déjà installées ci-dessus.
+RUN apt-get update && apt-get install -y --no-install-recommends curl libxcb1 \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --break-system-packages \
+    torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cpu
+
+# Poids FastSAM-s (~23 Mo) téléchargés une fois au build, PAS au runtime d'un
+# job (cf. facade.py : un job de plusieurs heures ne doit pas pouvoir échouer
+# sur un flake réseau pour une ressource déjà disponible dans l'image, même
+# logique que COLMAP/OpenMVS compilés au build, Lot 0).
+RUN mkdir -p /opt/fastsam && curl -sSL --fail -o /opt/fastsam/FastSAM-s.pt \
+    https://github.com/ultralytics/assets/releases/download/v8.4.0/FastSAM-s.pt
 
 WORKDIR /app
 COPY requirements.txt .

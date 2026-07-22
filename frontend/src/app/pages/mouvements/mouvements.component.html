@@ -1,0 +1,204 @@
+<main class="page-project">
+  <a routerLink="/projects" class="back">← Projets</a>
+  <h2>Mouvements</h2>
+
+  @if (selectableProjects().length > 0) {
+    <div class="project-picker">
+      <label>
+        Projet :
+        <select [ngModel]="selectedProjectId()" (ngModelChange)="selectProject($event)">
+          <option [ngValue]="null" disabled>— choisir —</option>
+          @for (p of selectableProjects(); track p.id) {
+            <option [ngValue]="p.id">{{ p.name }}</option>
+          }
+        </select>
+      </label>
+    </div>
+  }
+
+  @if (error()) {
+    <p class="error">{{ error() }}</p>
+  }
+
+  @if (!selectedProjectId()) {
+    @if (selectableProjects().length === 0) {
+      <p class="muted">Aucun projet n'a encore de maillage — lance d'abord une reconstruction depuis la page Projets.</p>
+    } @else {
+      <p class="muted">Choisis un projet dont découper les parties et définir les jointures :</p>
+      <div class="grid">
+        @for (p of selectableProjects(); track p.id) {
+          <a class="card" [routerLink]="['/mouvements', p.id]">
+            <h3>{{ p.name }}</h3>
+            <div class="badges">
+              <span class="badge">{{ p.photo_count }} photo(s)</span>
+            </div>
+          </a>
+        }
+      </div>
+    }
+  } @else if (loading()) {
+    <p class="muted center">Chargement…</p>
+  } @else if (project(); as project) {
+    <header class="project-header">
+      <h3>{{ project.name }}</h3>
+    </header>
+
+    @if (meshViewerUrl(); as url) {
+      <!-- ── Viewer + peinture de parties ─────────────────────────────────── -->
+      <section class="card">
+        <div class="viewer-header">
+          <h3>Maillage</h3>
+        </div>
+
+        <app-mesh-viewer
+          [meshUrl]="url"
+          [paintMode]="paintMode()"
+          [existingParts]="viewerParts()"
+          [axisMode]="placingAxis()"
+          (axisPicked)="onAxisPicked($event)"
+        ></app-mesh-viewer>
+
+        @if (paintMode()) {
+          <div class="calibration-form">
+            <label>
+              Nom de la partie :
+              <input type="text" [(ngModel)]="newPartName" />
+            </label>
+            <div class="dropzone-actions">
+              <button type="button" class="btn-primary" [disabled]="savingPart()" (click)="savePart()">
+                {{ savingPart() ? 'Enregistrement…' : 'Enregistrer la partie' }}
+              </button>
+              <button type="button" class="btn-ghost" (click)="cancelPaint()">Annuler</button>
+            </div>
+          </div>
+        }
+
+        <!-- ── Parties ─────────────────────────────────────────────────────── -->
+        <div class="parts-section">
+          <h4>Parties ({{ parts().length }})</h4>
+
+          @if (!paintMode()) {
+            <div class="dropzone-actions">
+              <button type="button" class="btn-primary" (click)="startNewPart()">+ Nouvelle partie (peindre)</button>
+              <button type="button" class="btn-ghost" [disabled]="suggesting()" (click)="suggestParts()">
+                {{ suggesting() ? 'Analyse…' : 'Suggérer un découpage automatique' }}
+              </button>
+            </div>
+          }
+
+          @if (parts().length > 0) {
+            <ul class="parts-list">
+              @for (part of parts(); track part.id) {
+                <li class="part-row">
+                  <span class="color-swatch" [style.background]="part.color"></span>
+                  <span class="part-name">{{ part.name }}</span>
+                  <span class="badge">{{ part.face_count }} face(s)</span>
+                  @if (part.suggested) { <span class="badge">suggérée</span> }
+                  @if (part.primitive_type) { <span class="badge">{{ part.primitive_type }}</span> }
+                  @if (!paintMode()) {
+                    <button type="button" class="btn-ghost" (click)="editPart(part)">Modifier</button>
+                    <button type="button" class="btn-ghost" (click)="deletePart(part)">Supprimer</button>
+                  }
+                </li>
+              }
+            </ul>
+          } @else {
+            <p class="muted">Aucune partie pour l'instant.</p>
+          }
+        </div>
+
+        <!-- ── Jointures ───────────────────────────────────────────────────── -->
+        @if (parts().length >= 2) {
+          <div class="joints-section">
+            <h4>Jointures</h4>
+
+            <div class="joint-form">
+              <label>
+                Partie parente (référentiel fixe) :
+                <select [ngModel]="selectedParentId()" (ngModelChange)="selectedParentId.set($event)">
+                  <option [ngValue]="null">—</option>
+                  @for (p of parts(); track p.id) { <option [ngValue]="p.id">{{ p.name }}</option> }
+                </select>
+              </label>
+              <label>
+                Partie mobile :
+                <select [ngModel]="selectedChildId()" (ngModelChange)="selectedChildId.set($event)">
+                  <option [ngValue]="null">—</option>
+                  @for (p of parts(); track p.id) { <option [ngValue]="p.id">{{ p.name }}</option> }
+                </select>
+              </label>
+
+              @if (selectedParentId() && selectedChildId()) {
+                <div class="dropzone-actions">
+                  <button type="button" class="btn-ghost" [disabled]="suggestingAxis()" (click)="suggestAxis()">
+                    {{ suggestingAxis() ? 'Analyse…' : "Suggérer un axe (zone de contact)" }}
+                  </button>
+                  <button type="button" class="btn-ghost" [class.active]="placingAxis()" (click)="togglePlaceAxis()">
+                    {{ placingAxis() ? "Terminer la pose manuelle" : "Poser l'axe manuellement (2 clics)" }}
+                  </button>
+                </div>
+
+                @if (axisSuggestion() === null && !placingAxis() && suggestingAxis() === false) {
+                  <p class="hint">
+                    Aucune suggestion automatique tant qu'une zone de contact nette n'est pas trouvée — pose l'axe
+                    manuellement dans le viewer.
+                  </p>
+                }
+                @if (axisReady()) {
+                  <p class="hint">
+                    Axe prêt — origine [{{ axisOrigin()[0] | number:'1.2-2' }}, {{ axisOrigin()[1] | number:'1.2-2' }},
+                    {{ axisOrigin()[2] | number:'1.2-2' }}], direction [{{ axisDirection()[0] | number:'1.2-2' }},
+                    {{ axisDirection()[1] | number:'1.2-2' }}, {{ axisDirection()[2] | number:'1.2-2' }}]
+                  </p>
+                }
+
+                <label>
+                  Type :
+                  <select [ngModel]="newJointType()" (ngModelChange)="newJointType.set($event)">
+                    @for (t of jointTypes; track t) { <option [ngValue]="t">{{ jointTypeLabels[t] }}</option> }
+                  </select>
+                </label>
+                <label>
+                  Limite min ({{ newJointType() === 'revolute' ? '°' : 'unités' }}) :
+                  <input type="number" [(ngModel)]="newLimitMin" />
+                </label>
+                <label>
+                  Limite max ({{ newJointType() === 'revolute' ? '°' : 'unités' }}) :
+                  <input type="number" [(ngModel)]="newLimitMax" />
+                </label>
+
+                <button
+                  type="button" class="btn-primary"
+                  [disabled]="creatingJoint() || !axisReady()"
+                  (click)="createJoint()"
+                >
+                  {{ creatingJoint() ? 'Création…' : 'Créer la jointure' }}
+                </button>
+              }
+            </div>
+
+            @if (joints().length > 0) {
+              <ul class="parts-list">
+                @for (joint of joints(); track joint.id) {
+                  <li class="part-row">
+                    <span class="part-name">{{ partName(joint.parent_part) }} → {{ partName(joint.child_part) }}</span>
+                    <span class="badge">{{ jointTypeLabels[joint.joint_type] }}</span>
+                    <button type="button" class="btn-ghost" (click)="deleteJoint(joint)">Supprimer</button>
+                  </li>
+                }
+              </ul>
+            }
+          </div>
+
+          <!-- ── Aperçu cinématique ────────────────────────────────────────── -->
+          @if (joints().length > 0) {
+            <div class="kinematic-section">
+              <h4>Aperçu cinématique</h4>
+              <app-kinematic-preview [meshUrl]="url" [parts]="parts()" [joints]="joints()"></app-kinematic-preview>
+            </div>
+          }
+        }
+      </section>
+    }
+  }
+</main>

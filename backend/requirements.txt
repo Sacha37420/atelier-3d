@@ -12,10 +12,27 @@ celery>=5.3
 redis>=5.0
 
 # ── Traitement 3D (Lot 0 : COLMAP/OpenMVS CPU-only compilés dans le Dockerfile) ─
+# open3d PAS installé : ses wheels pip exigent AVX2, or le CPU cible (2 vCPU, sans
+# AVX, cf. to_do_3D.md) le fait crasher (SIGILL) au simple `import`. Le repli
+# Poisson du Lot 2 (maillage trop dégradé) utilise le filtre pymeshlab
+# generate_surface_reconstruction_screened_poisson à la place — même besoin
+# couvert, déjà fonctionnel sur ce matériel.
 Pillow>=10.0
 trimesh>=4.0
-open3d>=0.18
 pymeshlab>=2023.12
 pyransac3d>=0.6
 numpy
 scipy
+# trimesh : dépendances optionnelles requises pour les exports 3MF (Lot 2, module
+# Impression) — sans elles, mesh.export(file_type='3mf') échoue à l'import.
+networkx>=3.0
+lxml>=5.0
+
+# ── Segmentation 2D zero-shot (Lot 4, module Bâtiments) ─────────────────────────
+# torch/torchvision CPU-only installés séparément dans le Dockerfile (wheels
+# dédiées download.pytorch.org — le wheel PyPI par défaut embarque CUDA, inutile
+# et bien plus volumineux ici) ; ultralytics (FastSAM) les réutilise tels quels.
+# Validé sur le CPU cible avant d'écrire ce module : torch tourne sans crash
+# (contrairement à open3d, cf. repair.py) — voir facade.py pour la mesure de
+# latence par photo.
+ultralytics>=8.3

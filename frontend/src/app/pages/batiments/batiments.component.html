@@ -1,0 +1,169 @@
+<main class="page-project">
+  <a routerLink="/projects" class="back">← Projets</a>
+  <h2>Bâtiments</h2>
+
+  @if (selectableProjects().length > 0) {
+    <div class="project-picker">
+      <label>
+        Projet :
+        <select [ngModel]="selectedProjectId()" (ngModelChange)="selectProject($event)">
+          <option [ngValue]="null" disabled>— choisir —</option>
+          @for (p of selectableProjects(); track p.id) {
+            <option [ngValue]="p.id">{{ p.name }}</option>
+          }
+        </select>
+      </label>
+    </div>
+  }
+
+  @if (error()) {
+    <p class="error">{{ error() }}</p>
+  }
+
+  @if (!selectedProjectId()) {
+    @if (selectableProjects().length === 0) {
+      <p class="muted">
+        Aucun projet n'a de photo à pose caméra résolue — lance d'abord une reconstruction depuis la
+        page Projets (ce module réutilise obligatoirement les poses du Lot 1).
+      </p>
+    } @else {
+      <p class="muted">Choisis un projet dont segmenter le bâtiment (murs/fenêtres/portes/toit) :</p>
+      <div class="grid">
+        @for (p of selectableProjects(); track p.id) {
+          <a class="card" [routerLink]="['/batiments', p.id]">
+            <h3>{{ p.name }}</h3>
+            <div class="badges">
+              <span class="badge">{{ p.photo_count }} photo(s)</span>
+            </div>
+          </a>
+        }
+      </div>
+    }
+  } @else if (loading()) {
+    <p class="muted center">Chargement…</p>
+  } @else if (project(); as project) {
+    <header class="project-header">
+      <h3>{{ project.name }}</h3>
+    </header>
+
+    <!-- ── Maillage + légende des classes ──────────────────────────────────── -->
+    @if (meshViewerUrl(); as url) {
+      <section class="card">
+        <div class="viewer-header">
+          <h3>Maillage</h3>
+        </div>
+        <app-mesh-viewer [meshUrl]="url"></app-mesh-viewer>
+
+        @if (semanticClasses().length > 0) {
+          <ul class="parts-list">
+            @for (cls of semanticClasses(); track cls.id) {
+              <li class="part-row">
+                <span class="color-swatch" [style.background]="cls.color"></span>
+                <span class="part-name">{{ cls.name }}</span>
+                <span class="badge">{{ cls.face_count }} face(s)</span>
+              </li>
+            }
+          </ul>
+        } @else {
+          <p class="hint">Aucune segmentation pour l'instant — labellise quelques régions ci-dessous puis lance le job.</p>
+        }
+      </section>
+    }
+
+    <!-- ── Job SEGMENTATION_FACADE ──────────────────────────────────────────── -->
+    <section class="card">
+      <h3>Segmentation sémantique</h3>
+
+      @if (activeFacadeJob(); as job) {
+        <div class="job-progress">
+          <div class="bar"><div class="fill" [style.width.%]="job.progress"></div></div>
+          <p class="job-message">{{ job.message || 'En cours…' }} ({{ job.progress }}%)</p>
+        </div>
+      } @else {
+        @if (lastFinishedFacadeJob(); as job) {
+          <p [class.error]="job.status === 'ERROR'" class="hint">{{ job.message }}</p>
+        }
+
+        @if (estimate(); as est) {
+          <p class="estimate">
+            Estimation : <strong>{{ formatDuration(est.estimated_seconds) }}</strong> pour {{ est.n_photos }} photo(s)
+            à pose résolue.
+            @if (est.warning_threshold_exceeded) {
+              <span class="warning-text"> ⚠ dépasse 2h — scénario drone/nombreuses photos.</span>
+            }
+          </p>
+        }
+
+        <button type="button" class="btn-primary" [disabled]="launching()" (click)="launchFacade()">
+          {{ launching() ? 'Lancement…' : 'Lancer la segmentation' }}
+        </button>
+        <p class="hint">Nécessite au moins une région labellisée ci-dessous.</p>
+      }
+    </section>
+
+    <!-- ── Labellisation assistée ───────────────────────────────────────────── -->
+    <section class="card">
+      <h3>Labellisation assistée</h3>
+      <p class="hint">
+        Choisis une photo, clique quelques régions représentatives de chaque classe (mur, fenêtre, porte,
+        toit) — la segmentation propage ensuite aux vues correspondantes via les poses caméra du Lot 1.
+      </p>
+
+      @if (resolvedPhotos().length === 0) {
+        <p class="muted">Aucune photo à pose résolue sur ce projet.</p>
+      } @else {
+        <div class="photo-grid">
+          @for (photo of resolvedPhotos(); track photo.id) {
+            <div class="thumb" [class.active]="selectedPhotoId() === photo.id" (click)="openPhotoForLabeling(photo)">
+              <img [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
+              @if (photo.region_count) {
+                <span class="thumb-badge">{{ photo.region_count }} régions</span>
+              }
+            </div>
+          }
+        </div>
+
+        @if (loadingRegions()) {
+          <p class="muted center">Analyse de la photo (segmentation 2D)…</p>
+        } @else if (selectedPhoto(); as photo) {
+          <div class="labeling-panel">
+            <div class="class-picker">
+              @for (name of classNames; track name) {
+                <button
+                  type="button" class="btn-ghost" [class.active]="selectedClass() === name"
+                  (click)="selectClass(name)"
+                >
+                  {{ classLabels[name] }}
+                </button>
+              }
+            </div>
+
+            <div class="photo-label-stage" (click)="onPhotoClick($event)">
+              <img class="stage-photo" [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" />
+              @if (photo.region_overlay) {
+                <img class="stage-overlay" [src]="mediaUrl(photo.region_overlay)" alt="" />
+              }
+            </div>
+            <p class="hint">Clique une région pour la labelliser avec la classe sélectionnée ci-dessus.</p>
+
+            @if (photoLabels().length > 0) {
+              <ul class="parts-list">
+                @for (label of photoLabels(); track label.id) {
+                  <li class="part-row">
+                    <span class="part-name">Région {{ label.region_index }}</span>
+                    <span class="badge">{{ classLabels[label.semantic_class] }}</span>
+                    <button type="button" class="btn-ghost" (click)="deleteLabel(label)">Supprimer</button>
+                  </li>
+                }
+              </ul>
+            } @else {
+              <p class="muted">Aucun label posé sur cette photo pour l'instant.</p>
+            }
+
+            <button type="button" class="btn-ghost" (click)="closeLabeling()">Fermer</button>
+          </div>
+        }
+      }
+    </section>
+  }
+</main>

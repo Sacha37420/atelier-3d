@@ -11,6 +11,32 @@
       </span>
       <button type="button" class="btn-ghost" (click)="clearPicks()">Effacer les points</button>
     }
+    @if (orientationMode) {
+      <span class="hint">Rotation manuelle (90° par clic) :</span>
+      <button type="button" class="btn-ghost" (click)="rotateStep('x', 90)">X</button>
+      <button type="button" class="btn-ghost" (click)="rotateStep('y', 90)">Y</button>
+      <button type="button" class="btn-ghost" (click)="rotateStep('z', 90)">Z</button>
+      <button type="button" class="btn-ghost" (click)="resetOrientation()">Réinitialiser</button>
+    }
+    @if (axisMode) {
+      <span class="hint">
+        @if (pickedCount() === 0) { Cliquer l'origine de l'axe de la jointure… }
+        @if (pickedCount() === 1) { Cliquer un second point pour la direction… }
+        @if (pickedCount() >= 2) { Axe posé. }
+      </span>
+      <button type="button" class="btn-ghost" (click)="clearPicks()">Effacer les points</button>
+    }
+    @if (paintMode) {
+      <span class="hint">Cliquer-glisser pour peindre les faces d'une partie —</span>
+      <button type="button" class="btn-ghost" (click)="decreaseBrush()" title="Pinceau plus petit">−</button>
+      <span class="hint">pinceau {{ brushLevel() }}/5</span>
+      <button type="button" class="btn-ghost" (click)="increaseBrush()" title="Pinceau plus grand">+</button>
+      <button type="button" class="btn-ghost" [class.active]="eraseMode()" (click)="toggleErase()">
+        {{ eraseMode() ? 'Gomme' : 'Peindre' }}
+      </button>
+      <span class="hint">{{ paintedCount() }} face(s) sélectionnée(s)</span>
+      <button type="button" class="btn-ghost" (click)="clearPaintSelection()">Effacer la sélection</button>
+    }
   </div>
 
   <div #canvasHost class="canvas-host">

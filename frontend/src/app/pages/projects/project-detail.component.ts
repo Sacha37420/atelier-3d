@@ -2,11 +2,18 @@ import { Component, OnDestroy, inject, signal, computed } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ApiService, ProjectDetail, Preset, ReconstructionEstimate, Job } from '../../core/api.service';
-import { MeshViewerComponent, CalibrationMeasurement } from '../../components/mesh-viewer/mesh-viewer.component';
+import { MeshViewerComponent } from '../../components/mesh-viewer/mesh-viewer.component';
 
 const POLL_INTERVAL_MS = 2000;
 const PRESET_LABELS: Record<Preset, string> = { rapide: 'Rapide', equilibre: 'Équilibré', precis: 'Précis' };
 
+/**
+ * Page Reconstruction (Lot 1) : dépôt photos/vidéo, lancement du job
+ * RECONSTRUCTION, aperçu du maillage résultant. La suite du pipeline
+ * (calibration, réparation, orientation, export — Lot 2) vit sur sa propre
+ * page réutilisable (`/impression/:id`, cf. ImpressionComponent) plutôt
+ * qu'ici, pour rester découplée d'un projet précis.
+ */
 @Component({
   selector: 'app-project-detail',
   standalone: true,
@@ -33,10 +40,6 @@ export class ProjectDetailComponent implements OnDestroy {
   readonly estimate = signal<ReconstructionEstimate | null>(null);
   readonly launching = signal(false);
 
-  readonly calibrationMode = signal(false);
-  readonly pendingMeasurement = signal<CalibrationMeasurement | null>(null);
-  realDistanceMeters: number | null = null;
-
   private projectId!: number;
   private pollHandle?: ReturnType<typeof setInterval>;
 
@@ -53,6 +56,15 @@ export class ProjectDetailComponent implements OnDestroy {
   readonly activeJob = computed(() => {
     const jobs = this.project()?.jobs ?? [];
     return jobs.find((j) => j.status === 'PENDING' || j.status === 'RUNNING') ?? null;
+  });
+
+  // Le verrou global n'autorise qu'un seul job actif tous modules confondus —
+  // la carte Reconstruction ne doit afficher sa barre de progression que pour
+  // un job RECONSTRUCTION (un job REPAIR lancé depuis la page Impression est
+  // du même verrou mais n'a rien à voir avec cette carte).
+  readonly activeReconstructionJob = computed(() => {
+    const job = this.activeJob();
+    return job?.kind === 'RECONSTRUCTION' ? job : null;
   });
 
   readonly lastFinishedJob = computed(() => {
@@ -212,31 +224,6 @@ export class ProjectDetailComponent implements OnDestroy {
     this.project.set({
       ...project,
       jobs: project.jobs.map((j) => (j.id === job.id ? job : j)),
-    });
-  }
-
-  // ── Calibration d'échelle (deux points cliqués dans le viewer 3D) ──────────
-  toggleCalibration(): void {
-    this.calibrationMode.update((v) => !v);
-    this.pendingMeasurement.set(null);
-    this.realDistanceMeters = null;
-  }
-
-  onMeasured(measurement: CalibrationMeasurement): void {
-    this.pendingMeasurement.set(measurement);
-  }
-
-  saveCalibration(): void {
-    const measurement = this.pendingMeasurement();
-    if (!measurement || !this.realDistanceMeters || this.realDistanceMeters <= 0) return;
-    const scale = this.realDistanceMeters / measurement.meshDistance;
-    this.api.updateProject(this.projectId, { scale_meters_per_unit: scale }).subscribe({
-      next: () => {
-        this.calibrationMode.set(false);
-        this.pendingMeasurement.set(null);
-        this.realDistanceMeters = null;
-        this.reload();
-      },
     });
   }
 }

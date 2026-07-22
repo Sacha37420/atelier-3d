@@ -1,0 +1,35 @@
+<div class="kinematic">
+  <div #canvasHost class="canvas-host">
+    @if (loading()) {
+      <div class="overlay">Chargement…</div>
+    }
+    @if (loadError()) {
+      <div class="overlay error">{{ loadError() }}</div>
+    }
+  </div>
+
+  @if (jointNodes().length > 0) {
+    <div class="sliders">
+      @for (node of jointNodes(); track node.joint.id) {
+        <div class="slider-row">
+          <span class="slider-label">
+            Jointure #{{ node.joint.id }}
+            ({{ node.joint.joint_type === 'revolute' ? 'pivot' : 'glissière' }})
+          </span>
+          <input
+            type="range"
+            [min]="sliderMin(node.joint)"
+            [max]="sliderMax(node.joint)"
+            [step]="node.joint.joint_type === 'revolute' ? 1 : 0.001"
+            [ngModel]="node.value"
+            (ngModelChange)="setJointValue(node, $event)"
+          />
+          <span class="slider-value">
+            {{ node.value | number: '1.0-2' }}{{ node.joint.joint_type === 'revolute' ? '°' : '' }}
+          </span>
+          <button type="button" class="btn-ghost" (click)="resetJoint(node)">Réinitialiser</button>
+        </div>
+      }
+    </div>
+  }
+</div>

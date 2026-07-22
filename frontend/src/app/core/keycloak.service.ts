@@ -29,7 +29,12 @@ export class KeycloakService {
       clientId: env.keycloakClientId ?? 'atelier-3d',
     });
 
-    const redirectUri = env.appUrl ?? window.location.origin;
+    // L'URL courante complète (chemin compris), pas seulement l'origine ou la
+    // base de l'app (env.appUrl) : sinon tout lien profond (/mouvements/5,
+    // /projects/3…) atterrit sur la racine de l'app après le aller-retour
+    // Keycloak, y compris sur un simple F5 — le chemin demandé n'est jamais
+    // repris ensuite par le routeur Angular.
+    const redirectUri = window.location.href;
 
     return this.kc.init({
       onLoad:           'login-required',

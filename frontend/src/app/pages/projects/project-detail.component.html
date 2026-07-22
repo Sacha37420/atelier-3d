@@ -9,11 +9,6 @@
       <div class="badges">
         <span class="badge">{{ project.project_type === 'batiment' ? 'Bâtiment' : 'Objet' }}</span>
         <span class="badge">{{ project.photo_count }} photo(s)</span>
-        @if (project.has_scale) {
-          <span class="badge success">Échelle calibrée ({{ project.scale_meters_per_unit }} m/unité)</span>
-        } @else {
-          <span class="badge warning">Échelle arbitraire — non calibrée</span>
-        }
       </div>
     </header>
 
@@ -64,11 +59,13 @@
     <section class="card">
       <h3>Reconstruction</h3>
 
-      @if (activeJob(); as job) {
+      @if (activeReconstructionJob(); as job) {
         <div class="job-progress">
           <div class="bar"><div class="fill" [style.width.%]="job.progress"></div></div>
           <p class="job-message">{{ job.message || 'En cours…' }} ({{ job.progress }}%)</p>
         </div>
+      } @else if (activeJob(); as job) {
+        <p class="hint">Un job de réparation est en cours pour l'atelier — un seul job lourd à la fois, tous modules confondus.</p>
       } @else {
         <div class="presets">
           @for (p of presets; track p) {
@@ -110,34 +107,15 @@
       }
     </section>
 
-    <!-- ── Résultat + calibration ───────────────────────────────────────────── -->
+    <!-- ── Aperçu du maillage ────────────────────────────────────────────────── -->
     @if (meshViewerUrl(); as url) {
       <section class="card">
         <div class="viewer-header">
           <h3>Maillage (v{{ latestMesh()?.version }})</h3>
-          <button type="button" class="btn-ghost" [class.active]="calibrationMode()" (click)="toggleCalibration()">
-            {{ calibrationMode() ? 'Quitter la calibration' : 'Étalonner l\'échelle' }}
-          </button>
+          <a class="btn-primary" [routerLink]="['/impression', project.id]">Aller à l'impression 3D →</a>
         </div>
 
-        <app-mesh-viewer
-          [meshUrl]="url"
-          [calibrationMode]="calibrationMode()"
-          (measured)="onMeasured($event)"
-        ></app-mesh-viewer>
-
-        @if (pendingMeasurement(); as m) {
-          <div class="calibration-form">
-            <p>Distance mesurée : {{ m.meshDistance.toFixed(4) }} unités de maillage.</p>
-            <label>
-              Distance réelle (mètres) :
-              <input type="number" step="0.001" min="0" [(ngModel)]="realDistanceMeters" />
-            </label>
-            <button type="button" class="btn-primary" [disabled]="!realDistanceMeters" (click)="saveCalibration()">
-              Enregistrer l'échelle
-            </button>
-          </div>
-        }
+        <app-mesh-viewer [meshUrl]="url"></app-mesh-viewer>
       </section>
     }
   }

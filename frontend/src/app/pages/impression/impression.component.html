@@ -1,0 +1,190 @@
+<main class="page-project">
+  <a routerLink="/projects" class="back">← Projets</a>
+  <h2>Impression 3D</h2>
+
+  @if (selectableProjects().length > 0) {
+    <div class="project-picker">
+      <label>
+        Projet :
+        <select [ngModel]="selectedProjectId()" (ngModelChange)="selectProject($event)">
+          <option [ngValue]="null" disabled>— choisir —</option>
+          @for (p of selectableProjects(); track p.id) {
+            <option [ngValue]="p.id">{{ p.name }}</option>
+          }
+        </select>
+      </label>
+    </div>
+  }
+
+  @if (error()) {
+    <p class="error">{{ error() }}</p>
+  }
+
+  @if (!selectedProjectId()) {
+    @if (selectableProjects().length === 0) {
+      <p class="muted">Aucun projet n'a encore de maillage — lance d'abord une reconstruction depuis la page Projets.</p>
+    } @else {
+      <p class="muted">Choisis un projet à préparer pour l'impression :</p>
+      <div class="grid">
+        @for (p of selectableProjects(); track p.id) {
+          <a class="card" [routerLink]="['/impression', p.id]">
+            <h3>{{ p.name }}</h3>
+            <div class="badges">
+              <span class="badge">{{ p.photo_count }} photo(s)</span>
+              @if (p.has_scale) {
+                <span class="badge success">Échelle calibrée</span>
+              } @else {
+                <span class="badge warning">Échelle arbitraire</span>
+              }
+            </div>
+          </a>
+        }
+      </div>
+    }
+  } @else if (loading()) {
+    <p class="muted center">Chargement…</p>
+  } @else if (project(); as project) {
+    <header class="project-header">
+      <h3>{{ project.name }}</h3>
+      <div class="badges">
+        <span class="badge">{{ project.photo_count }} photo(s)</span>
+        @if (project.has_scale) {
+          <span class="badge success">Échelle calibrée ({{ project.scale_meters_per_unit }} m/unité)</span>
+        } @else {
+          <span class="badge warning">Échelle arbitraire — non calibrée</span>
+        }
+      </div>
+    </header>
+
+    @if (meshViewerUrl(); as url) {
+      <section class="card">
+        <div class="viewer-header">
+          <h3>Maillage (v{{ latestMesh()?.version }})</h3>
+          <div class="dropzone-actions">
+            <button type="button" class="btn-ghost" [class.active]="calibrationMode()" (click)="toggleCalibration()">
+              {{ calibrationMode() ? 'Quitter la calibration' : "Étalonner l'échelle" }}
+            </button>
+            <button type="button" class="btn-ghost" [class.active]="orientationMode()" (click)="toggleOrientation()">
+              {{ orientationMode() ? "Quitter l'orientation" : 'Orienter pour impression' }}
+            </button>
+          </div>
+        </div>
+
+        @if (latestMesh(); as mesh) {
+          <div class="badges">
+            <span class="badge" [class.success]="mesh.is_watertight" [class.warning]="!mesh.is_watertight">
+              {{ mesh.is_watertight ? 'Watertight' : 'Non watertight' }}
+            </span>
+            @if (mesh.repair_report; as r) {
+              <span class="badge">
+                {{ r.method === 'poisson' ? 'Reconstruit (Poisson)' : 'Réparé' }} — {{ r.after.faces_number }} faces
+              </span>
+            }
+          </div>
+        }
+
+        <app-mesh-viewer
+          [meshUrl]="url"
+          [calibrationMode]="calibrationMode()"
+          [orientationMode]="orientationMode()"
+          (measured)="onMeasured($event)"
+          (orientationChanged)="onOrientationChanged($event)"
+        ></app-mesh-viewer>
+
+        @if (pendingMeasurement(); as m) {
+          <div class="calibration-form">
+            <p>Distance mesurée : {{ m.meshDistance.toFixed(4) }} unités de maillage.</p>
+            <label>
+              Distance réelle (mètres) :
+              <input type="number" step="0.001" min="0" [(ngModel)]="realDistanceMeters" />
+            </label>
+            <button type="button" class="btn-primary" [disabled]="!realDistanceMeters" (click)="saveCalibration()">
+              Enregistrer l'échelle
+            </button>
+          </div>
+        }
+
+        @if (orientationMode()) {
+          <div class="calibration-form">
+            <p>Rotations manuelles dans la barre du visualiseur, ou suggestion automatique (surplomb minimisé) :</p>
+            <button type="button" class="btn-ghost" [disabled]="orientSuggesting()" (click)="suggestOrientation()">
+              {{ orientSuggesting() ? 'Calcul…' : 'Suggestion automatique' }}
+            </button>
+          </div>
+        }
+
+        <!-- ── Réparation watertight ─────────────────────────────────────── -->
+        <div class="repair-section">
+          <h4>Réparation watertight</h4>
+
+          @if (activeRepairJob(); as job) {
+            <div class="job-progress">
+              <div class="bar"><div class="fill" [style.width.%]="job.progress"></div></div>
+              <p class="job-message">{{ job.message || 'En cours…' }} ({{ job.progress }}%)</p>
+            </div>
+          } @else if (activeJob(); as job) {
+            <p class="hint">Un autre job lourd est en cours pour l'atelier — un seul à la fois, tous modules confondus.</p>
+          } @else {
+            <div class="repair-target">
+              <label>
+                <input
+                  type="radio" name="repairTargetMode"
+                  [checked]="repairTargetMode() === 'triangles'"
+                  (change)="repairTargetMode.set('triangles')"
+                />
+                Cible : nombre de triangles
+              </label>
+              @if (repairTargetMode() === 'triangles') {
+                <input type="number" min="100" placeholder="laisser vide = pas de décimation" [(ngModel)]="repairTargetTriangles" />
+              }
+              <label>
+                <input
+                  type="radio" name="repairTargetMode"
+                  [checked]="repairTargetMode() === 'size'"
+                  (change)="repairTargetMode.set('size')"
+                />
+                Cible : poids de fichier (Mo)
+              </label>
+              @if (repairTargetMode() === 'size') {
+                <input type="number" min="0.1" step="0.1" placeholder="ex. 20" [(ngModel)]="repairTargetSizeMb" />
+              }
+            </div>
+
+            <button type="button" class="btn-primary" [disabled]="repairing()" (click)="launchRepair()">
+              {{ repairing() ? 'Lancement…' : 'Réparer (watertight + décimation)' }}
+            </button>
+          }
+
+          @if (lastFinishedJob(); as job) {
+            @if (job.kind === 'REPAIR') {
+              <p class="last-job" [class.error]="job.status === 'ERROR'">{{ job.message }}</p>
+            }
+          }
+        </div>
+
+        <!-- ── Export ────────────────────────────────────────────────────── -->
+        <div class="export-section">
+          <h4>Export</h4>
+          <div class="dropzone-actions">
+            <select class="btn-ghost" [ngModel]="exportFormat()" (ngModelChange)="exportFormat.set($event)">
+              <option value="stl">STL</option>
+              <option value="3mf">3MF</option>
+            </select>
+            <button
+              type="button" class="btn-primary"
+              [disabled]="exporting() || !project.has_scale"
+              (click)="exportMesh()"
+            >
+              {{ exporting() ? 'Export…' : 'Exporter' }}
+            </button>
+          </div>
+          @if (!project.has_scale) {
+            <p class="hint">Étalonner l'échelle ci-dessus avant de pouvoir exporter.</p>
+          }
+        </div>
+      </section>
+    } @else {
+      <p class="muted">Ce projet n'a pas (encore) de maillage exploitable pour l'impression.</p>
+    }
+  }
+</main>

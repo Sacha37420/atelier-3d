@@ -48,11 +48,36 @@ class Project(models.Model):
 
     OBJECT = 'objet'
     BUILDING = 'batiment'
-    TYPE_CHOICES = [(OBJECT, 'Objet'), (BUILDING, 'Bâtiment')]
+    ASSEMBLY = 'assembly'
+    TYPE_CHOICES = [(OBJECT, 'Objet'), (BUILDING, 'Bâtiment'), (ASSEMBLY, 'Assemblage')]
+
+    # ── Lot 5 (Conception CAO) : état de résolution d'un Project(ASSEMBLY) ──
+    # Distinct du status d'un Job individuel (même logique que Mesh.is_watertight) :
+    # persiste l'état courant de l'assemblage entre deux résolutions.
+    DRAFT = 'DRAFT'
+    SOLVED = 'SOLVED'
+    ASSEMBLY_ERROR = 'ERROR'
+    ASSEMBLY_STATUS_CHOICES = [
+        (DRAFT, 'Brouillon'), (SOLVED, 'Résolu'), (ASSEMBLY_ERROR, 'Erreur'),
+    ]
 
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     project_type = models.CharField(max_length=10, choices=TYPE_CHOICES, default=OBJECT)
+    # Non nul seulement si project_type == ASSEMBLY (cf. to_do_3D.md, Lot 5.2).
+    assembly_status = models.CharField(
+        max_length=10, choices=ASSEMBLY_STATUS_CHOICES, null=True, blank=True,
+    )
+    # Non nul quand ce `Project` est une sous-partie CAO d'un `Project(ASSEMBLY)` —
+    # garde son propre historique CadSketch/CadOperation et son propre Mesh (Lot
+    # 5.1, inchangé), simplement rattachée à un parent pour ne plus apparaître comme
+    # une entrée top-level dans la liste des projets (cf. décision utilisateur du
+    # 2026-07-26 : les pièces de Lot 5.1 sont des sous-parties d'un Project, pas des
+    # projets indépendants — voir CadAssemblyInstance.source_project qui référence
+    # ce même sous-projet pour le placement dans l'assemblage).
+    parent_project = models.ForeignKey(
+        'self', on_delete=models.CASCADE, null=True, blank=True, related_name='sub_parts',
+    )
     # Mètres par unité du maillage. Null tant qu'aucune calibration n'a été
     # renseignée (cf. Photo.calibration_points / calibration_ref_size ci-dessous) :
     # le maillage sort alors à une échelle arbitraire (point bloquant pour le
@@ -149,11 +174,15 @@ class Job(models.Model):
     REPAIR = 'REPAIR'
     SEGMENTATION_PARTS = 'SEGMENTATION_PARTS'
     SEGMENTATION_FACADE = 'SEGMENTATION_FACADE'
+    CAD_BUILD = 'CAD_BUILD'
+    CAD_ASSEMBLE = 'CAD_ASSEMBLE'
     KIND_CHOICES = [
         (RECONSTRUCTION, 'Reconstruction'),
         (REPAIR, 'Réparation impression'),
         (SEGMENTATION_PARTS, 'Segmentation parties/jointures'),
         (SEGMENTATION_FACADE, 'Segmentation bâtiment'),
+        (CAD_BUILD, 'Construction CAO'),
+        (CAD_ASSEMBLE, 'Assemblage CAO'),
     ]
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='jobs')
@@ -200,6 +229,14 @@ class Mesh(models.Model):
     # glTF généré à partir du PLY pivot pour le viewer three.js (cf. to_do_3D.md —
     # « Format pivot interne »). Null si l'export a échoué mais que le PLY est bon.
     gltf_file = models.FileField(upload_to=mesh_upload_path, max_length=500, null=True, blank=True)
+    # ── Lot 5 (Conception CAO) : B-rep exact, produit uniquement par Job(CAD_BUILD)
+    # /Job(CAD_ASSEMBLE) — nul pour un Mesh issu de la photogrammétrie (Lots 1-4),
+    # qui n'a pas de représentation B-rep. linear/angular_deflection sont les
+    # paramètres de tessellation OCCT (BRepMesh_IncrementalMesh) utilisés pour
+    # produire gltf_file à partir de step_file — cf. to_do_3D.md, spike Lot 5.0.
+    step_file = models.FileField(upload_to=mesh_upload_path, max_length=500, null=True, blank=True)
+    linear_deflection = models.FloatField(null=True, blank=True)
+    angular_deflection = models.FloatField(null=True, blank=True)
     version = models.PositiveIntegerField(default=1)
     vertex_count = models.PositiveIntegerField(null=True, blank=True)
     face_count = models.PositiveIntegerField(null=True, blank=True)
@@ -346,3 +383,190 @@ class SemanticClass(models.Model):
     @property
     def face_count(self) -> int:
         return len(self.face_ids)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ATELIER 3D — Lot 5 : Conception CAO manuelle et Assemblage
+# ──────────────────────────────────────────────────────────────────────────────
+# Deuxième façon de peupler Project/Mesh, en parallèle de la Reconstruction
+# (Lot 1) — pas de tables CadPart/CadMesh isolées (cf. to_do_3D.md, principe
+# d'intégration). Préfixe `Cad*` pour éviter toute collision avec Part/Joint
+# (Lot 3), qui désignent un concept différent (sous-ensemble de faces d'un Mesh
+# triangulé, pas une pièce paramétrique).
+class CadSketch(models.Model):
+    """
+    Un sketch 2D posé sur un plan de référence d'un `Project` CAO — segments,
+    polylignes/polygones fermés, cercles, arcs, courbes B-spline échantillonnées
+    (+ épaisseur pour les courbes non fermées, cf. to_do_3D.md). Consommé par les
+    `CadOperation` EXTRUDE/REVOLVE du même `Project`. V1 = formulaires numériques,
+    pas de canvas interactif (cf. to_do_3D.md — Hors périmètre).
+    """
+
+    XY = 'XY'
+    XZ = 'XZ'
+    YZ = 'YZ'
+    PLANE_CHOICES = [(XY, 'XY'), (XZ, 'XZ'), (YZ, 'YZ')]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='cad_sketches')
+    name = models.CharField(max_length=100)
+    plane = models.CharField(max_length=2, choices=PLANE_CHOICES, default=XY)
+    # Liste de dicts {type: segment|polyline|circle|arc|bspline, ...} — cf.
+    # cad_build.py pour le détail des champs attendus par type d'entité.
+    entities = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'cad_sketches'
+        ordering = ['project', 'name']
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class CadOperation(models.Model):
+    """
+    Une étape de l'historique de modélisation CAO d'un `Project` — évaluée dans
+    l'ordre (`order`) par `Job(CAD_BUILD)` pour produire un nouveau `Mesh` (cf.
+    cad_build.py). Référence une face/arête d'une opération antérieure par index :
+    réévaluée en entier à chaque édition, pas de cache incrémental (limite
+    topologique assumée, cf. to_do_3D.md — avertir si le nombre de faces change
+    après réévaluation plutôt que d'appliquer aveuglément les opérations suivantes
+    sur de mauvais indices).
+    """
+
+    PRIMITIVE_BOX = 'PRIMITIVE_BOX'
+    PRIMITIVE_SPHERE = 'PRIMITIVE_SPHERE'
+    PRIMITIVE_CYLINDER = 'PRIMITIVE_CYLINDER'
+    PRIMITIVE_CONE = 'PRIMITIVE_CONE'
+    PRIMITIVE_TORUS = 'PRIMITIVE_TORUS'
+    EXTRUDE = 'EXTRUDE'
+    REVOLVE = 'REVOLVE'
+    SURFACE_FROM_WIRE = 'SURFACE_FROM_WIRE'
+    BOOLEAN_UNION = 'BOOLEAN_UNION'
+    BOOLEAN_CUT = 'BOOLEAN_CUT'
+    BOOLEAN_INTERSECT = 'BOOLEAN_INTERSECT'
+    PATTERN_CIRCULAR = 'PATTERN_CIRCULAR'
+    PATTERN_LINEAR = 'PATTERN_LINEAR'
+    GEAR_TEETH = 'GEAR_TEETH'
+    TYPE_CHOICES = [
+        (PRIMITIVE_BOX, 'Primitive : boîte'),
+        (PRIMITIVE_SPHERE, 'Primitive : sphère'),
+        (PRIMITIVE_CYLINDER, 'Primitive : cylindre'),
+        (PRIMITIVE_CONE, 'Primitive : cône'),
+        (PRIMITIVE_TORUS, 'Primitive : tore'),
+        (EXTRUDE, 'Extrusion'),
+        (REVOLVE, 'Révolution'),
+        (SURFACE_FROM_WIRE, 'Surface depuis un contour'),
+        (BOOLEAN_UNION, 'Booléen : union'),
+        (BOOLEAN_CUT, 'Booléen : différence'),
+        (BOOLEAN_INTERSECT, 'Booléen : intersection'),
+        (PATTERN_CIRCULAR, 'Répétition circulaire'),
+        (PATTERN_LINEAR, 'Répétition linéaire'),
+        (GEAR_TEETH, 'Denture (engrenage)'),
+    ]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='cad_operations')
+    order = models.PositiveIntegerField(default=0)
+    operation_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    # Contenu par type, cf. cad_build.py pour le détail exact des clés attendues :
+    #  PRIMITIVE_* : dimensions + placement
+    #  EXTRUDE/REVOLVE : sketch_id (CadSketch), mode ADD|CUT|INTERSECT, distance/
+    #                    angle/axe
+    #  BOOLEAN_* : source_a/source_b (id de CadOperation antérieures)
+    #  PATTERN_* : source (id), count, step/angle
+    #  GEAR_TEETH : source (id), face_index, module, teeth_count, pressure_angle,
+    #               width, internal (bool)
+    params = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'cad_operations'
+        ordering = ['project', 'order']
+
+    def __str__(self) -> str:
+        return f'{self.project_id}#{self.order} {self.operation_type}'
+
+
+class CadAssemblyInstance(models.Model):
+    """
+    Une pièce placée dans un `Project(project_type=ASSEMBLY)` — référence un
+    `Project` CAO source ET la version précise de son `Mesh` (pin, cf. to_do_3D.md
+    — limite topologique n°2 : un re-pointage explicite vers un `Mesh` plus récent
+    doit avertir que les références des `CadAssemblyConstraint` peuvent ne plus
+    désigner les mêmes faces, pas une invalidation spontanée). `placement` reste
+    nul tant que `Job(CAD_ASSEMBLE)` n'a pas résolu l'assemblage.
+    """
+
+    assembly_project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='cad_instances')
+    source_project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='cad_instances_used_in')
+    # PROTECT : un Mesh pointé par une instance d'assemblage ne doit pas pouvoir
+    # disparaître silencieusement — cf. limite topologique n°2 ci-dessus.
+    source_mesh = models.ForeignKey(Mesh, on_delete=models.PROTECT, related_name='cad_instances')
+    label = models.CharField(max_length=100, blank=True)
+    # Translation + rotation résolues par le solveur (JSON : {position: [x,y,z],
+    # quaternion_xyzw: [x,y,z,w]}) — nul avant résolution.
+    placement = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'cad_assembly_instances'
+        ordering = ['assembly_project', 'id']
+
+    def __str__(self) -> str:
+        return self.label or f'{self.source_project.name} #{self.pk}'
+
+
+class CadAssemblyConstraint(models.Model):
+    """
+    Une contrainte de positionnement entre deux `CadAssemblyInstance` (une seule
+    si FIXED, ancrée au monde) d'un `Project(ASSEMBLY)` — résolue par
+    `Job(CAD_ASSEMBLE)` via FreeCAD headless (cf. cad_assemble.py). Positionnement
+    statique uniquement : le mouvement reste du ressort du Lot 3 (Part/Joint),
+    posé après résolution sur le `Mesh` global résultant — aucun changement côté
+    Lot 3 (cf. to_do_3D.md).
+    """
+
+    COINCIDENT = 'COINCIDENT'
+    CONTACT = 'CONTACT'
+    PARALLEL = 'PARALLEL'
+    CONCENTRIC = 'CONCENTRIC'
+    DISTANCE = 'DISTANCE'
+    ANGLE = 'ANGLE'
+    FIXED = 'FIXED'
+    GEAR_MESH = 'GEAR_MESH'
+    TYPE_CHOICES = [
+        (COINCIDENT, 'Coïncidence'),
+        (CONTACT, 'Contact / coplanaire'),
+        (PARALLEL, 'Parallélisme'),
+        (CONCENTRIC, 'Concentricité'),
+        (DISTANCE, 'Distance'),
+        (ANGLE, 'Angle'),
+        (FIXED, 'Fixation au monde'),
+        (GEAR_MESH, 'Engrènement'),
+    ]
+
+    assembly_project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='cad_constraints')
+    constraint_type = models.CharField(max_length=12, choices=TYPE_CHOICES)
+    instance_a = models.ForeignKey(
+        CadAssemblyInstance, on_delete=models.CASCADE, related_name='constraints_as_a',
+    )
+    # {kind: face|edge|vertex, index}
+    reference_a = models.JSONField()
+    # Nul seulement si constraint_type == FIXED (ancrée au monde, pas de 2e pièce).
+    instance_b = models.ForeignKey(
+        CadAssemblyInstance, on_delete=models.CASCADE, related_name='constraints_as_b',
+        null=True, blank=True,
+    )
+    reference_b = models.JSONField(null=True, blank=True)
+    # DISTANCE: {'distance_mm': ...} ; ANGLE: {'angle_deg': ...} ; GEAR_MESH:
+    # dérivés automatiquement par cad_assemble.py à partir du module/nombre de
+    # dents des CadOperation(GEAR_TEETH) de chaque pièce — jamais saisis à la
+    # main (cf. to_do_3D.md).
+    params = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'cad_assembly_constraints'
+        ordering = ['assembly_project', 'id']

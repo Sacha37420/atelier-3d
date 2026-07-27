@@ -30,6 +30,12 @@ export interface PaintedPart {
   color: string;
 }
 
+/** Une pièce affichable/masquable du modèle chargé (un noeud nommé du glTF). */
+export interface VisibilityPart {
+  name: string;
+  visible: boolean;
+}
+
 const BRUSH_RADIUS_RATIOS = [0.01, 0.02, 0.035, 0.06, 0.1];
 const PAINT_BASE_COLOR = new THREE.Color(0xb0b0b0);
 const PAINT_HIGHLIGHT_COLOR = new THREE.Color(0xff8c1a);
@@ -88,6 +94,11 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
   readonly loadError = signal<string | null>(null);
   readonly pickedCount = signal(0);
 
+  // ── Afficher/masquer des pièces (assemblages, Lot 5.2) ───────────────────
+  // Un modèle mono-pièce (reconstruction, CAD_BUILD) n'a qu'un seul noeud —
+  // la liste ne reste affichée côté template que si elle en compte plusieurs.
+  readonly parts = signal<VisibilityPart[]>([]);
+
   private renderer?: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera?: THREE.PerspectiveCamera;
@@ -95,6 +106,8 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
   private frameId?: number;
   private resizeObserver?: ResizeObserver;
   private modelRoot?: THREE.Object3D;
+  /** Noeud portant les pièces nommées (cf. loadMesh) — pas toujours modelRoot lui-même. */
+  private partsRoot?: THREE.Object3D;
   private pickPoints: THREE.Vector3[] = [];
   private pickMarkers: THREE.Object3D[] = [];
   private raycaster = new THREE.Raycaster();
@@ -241,6 +254,8 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
     this.spatialGrid.clear();
     this.currentSelection.clear();
     this.paintedCount.set(0);
+    this.parts.set([]);
+    this.partsRoot = undefined;
 
     new GLTFLoader().load(
       url,
@@ -258,6 +273,28 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
           }
         });
         this.applyWireframe(this.wireframe());
+        // Chaque pièce (assemblage, Lot 5.2, ou pièce unique) est un noeud
+        // nommé exporté par trimesh (run_cad_assemble/run_cad_build) — mais
+        // trimesh enveloppe TOUJOURS son export dans un noeud racine "world"
+        // (vérifié sur le glTF réel : gltf.scene.children = [world], et
+        // c'est world.children qui contient les pièces nommées, un niveau
+        // plus bas que ce qu'on pourrait attendre). On descend donc tant que
+        // le noeud courant n'a qu'un seul enfant qui n'est pas lui-même un
+        // Mesh (un simple Group d'enveloppe), pour retomber sur le bon niveau
+        // aussi bien pour un maillage mono-pièce (1 seul enfant nommé au
+        // final, panneau masqué côté template) qu'un assemblage (plusieurs).
+        this.partsRoot = this.modelRoot;
+        while (
+          this.partsRoot.children.length === 1
+          && !(this.partsRoot.children[0] as THREE.Mesh).isMesh
+        ) {
+          this.partsRoot = this.partsRoot.children[0];
+        }
+        this.parts.set(
+          this.partsRoot.children
+            .filter((child) => !!child.name)
+            .map((child) => ({ name: child.name, visible: true })),
+        );
         this.scene.add(this.modelRoot);
         this.frameCamera(this.modelRoot);
         this.printQuaternion.identity();
@@ -600,5 +637,24 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
 
   getPaintedFaceIds(): number[] {
     return Array.from(this.currentSelection);
+  }
+
+  // ── Afficher/masquer des pièces (assemblages, Lot 5.2) ───────────────────
+  togglePartVisibility(name: string): void {
+    const next = !this.parts().find((p) => p.name === name)?.visible;
+    this.parts.update((list) => list.map((p) => (p.name === name ? { ...p, visible: next } : p)));
+    const child = this.partsRoot?.children.find((c) => c.name === name);
+    if (child) child.visible = next;
+  }
+
+  /** N'affiche que cette pièce (pratique pour l'isoler du reste de l'assemblage). */
+  isolatePart(name: string): void {
+    this.parts.update((list) => list.map((p) => ({ ...p, visible: p.name === name })));
+    this.partsRoot?.children.forEach((c) => { if (c.name) c.visible = c.name === name; });
+  }
+
+  showAllParts(): void {
+    this.parts.update((list) => list.map((p) => ({ ...p, visible: true })));
+    this.partsRoot?.children.forEach((c) => { if (c.name) c.visible = true; });
   }
 }

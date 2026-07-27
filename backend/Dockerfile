@@ -104,6 +104,58 @@ RUN pip install --no-cache-dir --break-system-packages \
 RUN mkdir -p /opt/fastsam && curl -sSL --fail -o /opt/fastsam/FastSAM-s.pt \
     https://github.com/ultralytics/assets/releases/download/v8.4.0/FastSAM-s.pt
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Lot 5 — Conception CAO manuelle : build123d (noyau OCCT) + cq_gears (denture)
+# + FreeCAD >= 1.0 headless (Assembly/OndselSolver). Validé au spike Lot 5.0
+# (dev/atelier-3d-spike/lot5/, voir aussi la mémoire atelier-3d-lot5-spike-findings).
+# ──────────────────────────────────────────────────────────────────────────────
+
+# cadquery embarque cadquery-ocp (bindings OCCT avec VTK). build123d dépend par
+# défaut de cadquery-ocp-novtk (même OCCT, sans VTK) — installer les deux
+# provoquerait une collision de fichiers dans le même site-packages (module OCP).
+# On installe cadquery en premier (pour cq_gears), puis build123d en --no-deps
+# pour réutiliser l'OCP déjà en place — vérifié au spike : l'import fonctionne
+# malgré la variante VTK, aucun repli par export/import STEP nécessaire (cq_gears
+# génère directement une forme OCCT intégrable telle quelle dans build123d).
+RUN pip install --no-cache-dir --break-system-packages cadquery && \
+    pip install --no-cache-dir --break-system-packages \
+    "git+https://github.com/meadiode/cq_gears.git" && \
+    pip install --no-cache-dir --break-system-packages --no-deps build123d && \
+    pip install --no-cache-dir --break-system-packages \
+    typing_extensions "ezdxf>=1.1.0" anytree svgpathtools ipython \
+    ocpsvg ocp_gordon trianglesolver sympy scikit-learn webcolors requests lib3mf
+
+# --- FreeCAD >= 1.0 headless (workbench Assembly/OndselSolver, Job CAD_ASSEMBLE) :
+# le paquet apt d'Ubuntu 24.04 est antérieur à 1.0 (pas de workbench Assembly) —
+# AppImage officielle requise. Extraite au build (--appimage-extract, ne
+# nécessite PAS de FUSE/--device : vérifié au spike, fonctionne en sandbox Docker
+# sans /dev/fuse) plutôt que stockée + extraite au runtime : le worker Celery est
+# un process long-lived, l'extraction une fois pour toutes au build évite ~20-30s
+# de coût à chaque (re)démarrage du container. Invoquée en sous-processus
+# (`freecadcmd`, cf. cad_assemble.py) et jamais importée dans le process Django :
+# l'AppImage embarque son propre Python 3.11, différent du 3.12 du reste du
+# backend — même logique de non-réinvention/binaire externe que COLMAP/OpenMVS.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libx11-6 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 fontconfig \
+    libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+    libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libdbus-1-3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSL --fail -o /tmp/FreeCAD.AppImage \
+    https://github.com/FreeCAD/FreeCAD/releases/download/1.1.3/FreeCAD_1.1.3-Linux-x86_64-py311.AppImage && \
+    echo "3a853eb69ee595f779f2255dbf80a765926981d8ff68903cefee4dfb03a8f5ef  /tmp/FreeCAD.AppImage" | sha256sum -c - && \
+    chmod +x /tmp/FreeCAD.AppImage && \
+    cd /opt && /tmp/FreeCAD.AppImage --appimage-extract && \
+    mv /opt/squashfs-root /opt/freecad && \
+    rm -f /tmp/FreeCAD.AppImage
+# Lien ciblé sur le seul binaire utile plutôt que d'ajouter tout /opt/freecad/usr/bin
+# au PATH : ce dossier contient aussi ses propres `python`/`pip` (Python 3.11 embarqué,
+# sans Django ni cadquery) qui shadowerait silencieusement le python système 3.12 du
+# reste du backend si le dossier entier passait devant lui dans le PATH — reproduit
+# et corrigé au Lot 5.0 (ModuleNotFoundError sur cadquery, `python` résolvait vers
+# l'interpréteur embarqué de FreeCAD).
+RUN ln -s /opt/freecad/usr/bin/freecadcmd /usr/local/bin/freecadcmd
+ENV QT_QPA_PLATFORM=offscreen
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --break-system-packages -r requirements.txt

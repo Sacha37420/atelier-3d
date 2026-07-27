@@ -31,6 +31,9 @@ export class AppComponent {
   protected noop = (): void => {};
   protected closeMobileFn = (): void => this.closeMobile();
 
+  // Pas d'entrée "Conception CAO" : c'est une méthode d'initialisation du
+  // maillage choisie DANS la page d'un projet (au même titre que "Photos"),
+  // pas une destination de menu séparée — cf. project-detail.component.ts.
   readonly navItems: NavItem[] = [
     { path: '/projects',    label: 'Projets',       abbr: 'Pj' },
     { path: '/impression',  label: 'Impression 3D', abbr: 'Im' },

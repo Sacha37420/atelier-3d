@@ -1,0 +1,6 @@
+# Marqueur lu par scripts/clean2.sh : ce Dockerfile compile des dépendances
+# coûteuses (COLMAP/OpenMVS depuis les sources, FreeCAD AppImage extraite,
+# build123d/cq_gears) — plusieurs dizaines de minutes la première fois.
+# clean2.sh évite de vider le cache de build Docker tant que ce Dockerfile n'a
+# pas changé depuis le dernier build réussi (cf. .heavy-build.sha256, généré
+# automatiquement par recompose_docker.sh — fichier local, jamais commité).

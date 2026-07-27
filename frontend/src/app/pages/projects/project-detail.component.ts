@@ -1,23 +1,39 @@
 import { Component, OnDestroy, inject, signal, computed } from '@angular/core';
+import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
-import { ApiService, ProjectDetail, Preset, ReconstructionEstimate, Job } from '../../core/api.service';
+import {
+  ApiService, ProjectDetail, Preset, ReconstructionEstimate, Job,
+  CadSketch, CadPlane, CadEntity, CadEntityType,
+  CadOperation, CadOperationType, CAD_OPERATION_LABELS,
+  Project, CadAssemblyInstance, CadAssemblyConstraint, ConstraintType, CONSTRAINT_TYPE_LABELS,
+} from '../../core/api.service';
 import { MeshViewerComponent } from '../../components/mesh-viewer/mesh-viewer.component';
 
 const POLL_INTERVAL_MS = 2000;
 const PRESET_LABELS: Record<Preset, string> = { rapide: 'Rapide', equilibre: 'Équilibré', precis: 'Précis' };
 
+export type InitMode = 'photos' | 'cao';
+
 /**
- * Page Reconstruction (Lot 1) : dépôt photos/vidéo, lancement du job
- * RECONSTRUCTION, aperçu du maillage résultant. La suite du pipeline
- * (calibration, réparation, orientation, export — Lot 2) vit sur sa propre
- * page réutilisable (`/impression/:id`, cf. ImpressionComponent) plutôt
- * qu'ici, pour rester découplée d'un projet précis.
+ * Page Projet (Lot 1 + Lot 5) : un `Project` n'a qu'une seule façon de
+ * démarrer réellement en cours d'usage, mais DEUX méthodes équivalentes pour
+ * initialiser son maillage — photos (Reconstruction, Lot 1) ou conception CAO
+ * manuelle (sketchs/opérations, Lot 5.1) — cf. to_do_3D.md : les deux
+ * produisent un `Mesh` standard, ensuite utilisable à l'identique par
+ * Impression/Mouvements/Bâtiments. Les deux méthodes vivent ICI, dans la
+ * même page projet (choix explicite via `initMode`), plutôt que sur des
+ * pages/menu séparés — elles ne sont pas deux fonctionnalités différentes,
+ * juste deux façons de peupler le même `Project`/`Mesh`.
+ *
+ * La suite du pipeline une fois un maillage obtenu (calibration, réparation,
+ * orientation, export — Lot 2) vit sur sa propre page réutilisable
+ * (`/impression/:id`), pour rester découplée de la méthode d'origine.
  */
 @Component({
   selector: 'app-project-detail',
   standalone: true,
-  imports: [FormsModule, RouterLink, MeshViewerComponent],
+  imports: [FormsModule, RouterLink, MeshViewerComponent, DecimalPipe],
   templateUrl: './project-detail.component.html',
   styleUrl: './project-detail.component.scss',
 })
@@ -31,6 +47,10 @@ export class ProjectDetailComponent implements OnDestroy {
   readonly project = signal<ProjectDetail | null>(null);
   readonly loading = signal(true);
   readonly error = signal<string | null>(null);
+
+  // ── Choix de la méthode d'initialisation du maillage ─────────────────────
+  readonly initMode = signal<InitMode>('photos');
+  setInitMode(mode: InitMode): void { this.initMode.set(mode); }
 
   readonly uploading = signal(false);
   readonly dragOver = signal(false);
@@ -59,18 +79,117 @@ export class ProjectDetailComponent implements OnDestroy {
   });
 
   // Le verrou global n'autorise qu'un seul job actif tous modules confondus —
-  // la carte Reconstruction ne doit afficher sa barre de progression que pour
-  // un job RECONSTRUCTION (un job REPAIR lancé depuis la page Impression est
-  // du même verrou mais n'a rien à voir avec cette carte).
+  // ces deux computed ne servent qu'à savoir laquelle des deux cartes
+  // (Reconstruction / Construction CAO) doit afficher sa propre barre de
+  // progression pour CE job précis.
   readonly activeReconstructionJob = computed(() => {
     const job = this.activeJob();
     return job?.kind === 'RECONSTRUCTION' ? job : null;
+  });
+
+  readonly activeCadBuildJob = computed(() => {
+    const job = this.activeJob();
+    return job?.kind === 'CAD_BUILD' ? job : null;
   });
 
   readonly lastFinishedJob = computed(() => {
     const jobs = this.project()?.jobs ?? [];
     return jobs.find((j) => j.status === 'DONE' || j.status === 'ERROR') ?? null;
   });
+
+  readonly lastFinishedCadBuildJob = computed(() => {
+    const jobs = this.project()?.jobs ?? [];
+    return jobs.find((j) => (j.status === 'DONE' || j.status === 'ERROR') && j.kind === 'CAD_BUILD') ?? null;
+  });
+
+  // ── Conception CAO (Lot 5.1) ─────────────────────────────────────────────
+  readonly sketches = signal<CadSketch[]>([]);
+  readonly operations = signal<CadOperation[]>([]);
+  readonly cadOperationTypes = Object.keys(CAD_OPERATION_LABELS) as CadOperationType[];
+  readonly operationLabels = CAD_OPERATION_LABELS;
+
+  readonly addingSketch = signal(false);
+  newSketchName = '';
+  newSketchPlane: CadPlane = 'XY';
+  newSketchEntities: CadEntity[] = [];
+  newEntityType: CadEntityType = 'circle';
+  entityField = {
+    startX: 0, startY: 0, midX: 0, midY: 0, endX: 0, endY: 0,
+    centerX: 0, centerY: 0, radius: 1,
+    pointsText: '', closed: false, thickness: 1,
+  };
+
+  readonly addingOperation = signal(false);
+  newOperationType: CadOperationType = 'PRIMITIVE_BOX';
+  op = {
+    length: 20, width: 20, height: 10, radius: 5,
+    bottomRadius: 5, topRadius: 3, majorRadius: 10, minorRadius: 2,
+    usePlacement: false, posX: 0, posY: 0, posZ: 0, rotX: 0, rotY: 0, rotZ: 0,
+    sketchId: null as number | null, mode: 'ADD' as 'ADD' | 'CUT' | 'INTERSECT',
+    useTarget: false, targetId: null as number | null,
+    amount: 10, both: false,
+    axisOriginX: 0, axisOriginY: 0, axisOriginZ: 0,
+    axisDirX: 0, axisDirY: 0, axisDirZ: 1, angleDeg: 360,
+    sourceAId: null as number | null, sourceBId: null as number | null,
+    sourceId: null as number | null, count: 4,
+    patRadius: 20, centerX: 0, centerY: 0, centerZ: 0,
+    patAxisDirX: 0, patAxisDirY: 0, patAxisDirZ: 1, startAngleDeg: 0,
+    stepX: 10, stepY: 0, stepZ: 0,
+    faceIndex: 0, module: 1.5, teethNumber: 20, pressureAngle: 20, gearWidth: 10, internal: false,
+  };
+
+  readonly buildDeflectionLinear = signal(0.1);
+  readonly buildDeflectionAngular = signal(0.3);
+  readonly building = signal(false);
+
+  // ── Assemblage (Lot 5.2) ──────────────────────────────────────────────────
+  readonly isAssembly = computed(() => this.project()?.project_type === 'assembly');
+
+  readonly subParts = signal<Project[]>([]);
+  readonly addingSubPart = signal(false);
+  newSubPartName = '';
+
+  readonly cadInstances = signal<CadAssemblyInstance[]>([]);
+  readonly addingInstance = signal(false);
+  newInstanceSourceProjectId: number | null = null;
+  newInstanceLabel = '';
+
+  readonly cadConstraints = signal<CadAssemblyConstraint[]>([]);
+  readonly constraintTypes = Object.keys(CONSTRAINT_TYPE_LABELS) as ConstraintType[];
+  readonly constraintTypeLabels = CONSTRAINT_TYPE_LABELS;
+  readonly addingConstraint = signal(false);
+  newConstraint = {
+    type: 'CONCENTRIC' as ConstraintType,
+    instanceAId: null as number | null,
+    refAKind: 'edge' as 'face' | 'edge' | 'vertex',
+    refAIndex: 0,
+    instanceBId: null as number | null,
+    refBKind: 'edge' as 'face' | 'edge' | 'vertex',
+    refBIndex: 0,
+    distanceMm: 10,
+    angleDeg: 0,
+  };
+
+  readonly assembling = signal(false);
+
+  readonly activeAssembleJob = computed(() => {
+    const job = this.activeJob();
+    return job?.kind === 'CAD_ASSEMBLE' ? job : null;
+  });
+
+  readonly lastFinishedAssembleJob = computed(() => {
+    const jobs = this.project()?.jobs ?? [];
+    return jobs.find((j) => (j.status === 'DONE' || j.status === 'ERROR') && j.kind === 'CAD_ASSEMBLE') ?? null;
+  });
+
+  subPartName(id: number): string {
+    return this.subParts().find((p) => p.id === id)?.name ?? `#${id}`;
+  }
+
+  instanceLabel(id: number | null): string {
+    if (id === null) return '—';
+    return this.cadInstances().find((i) => i.id === id)?.label || `instance #${id}`;
+  }
 
   constructor() {
     this.projectId = Number(this.route.snapshot.paramMap.get('id'));
@@ -94,9 +213,29 @@ export class ProjectDetailComponent implements OnDestroy {
         this.refreshEstimate();
         const active = this.activeJob();
         if (active) this.startPoll(active.id);
+        if (project.project_type === 'assembly') this.reloadAssembly();
       },
       error: () => { this.error.set("Impossible de charger le projet."); this.loading.set(false); },
     });
+    this.api.getCadSketches(this.projectId).subscribe({ next: (list) => this.sketches.set(list) });
+    this.api.getCadOperations(this.projectId).subscribe({
+      next: (list) => {
+        this.operations.set(list);
+        // Choix par défaut de l'onglet : celle des deux méthodes qui a déjà
+        // des données prend le pas — sans ça, un projet CAO déjà entamé
+        // rouvrirait toujours sur l'onglet Photos par défaut.
+        const project = this.project();
+        if (project && project.photo_count === 0 && list.length > 0) {
+          this.initMode.set('cao');
+        }
+      },
+    });
+  }
+
+  private reloadAssembly(): void {
+    this.api.getSubParts(this.projectId).subscribe({ next: (list) => this.subParts.set(list) });
+    this.api.getCadInstances(this.projectId).subscribe({ next: (list) => this.cadInstances.set(list) });
+    this.api.getCadConstraints(this.projectId).subscribe({ next: (list) => this.cadConstraints.set(list) });
   }
 
   // ── Upload photos (glisser-déposer) ────────────────────────────────────────
@@ -224,6 +363,269 @@ export class ProjectDetailComponent implements OnDestroy {
     this.project.set({
       ...project,
       jobs: project.jobs.map((j) => (j.id === job.id ? job : j)),
+    });
+  }
+
+  // ── Conception CAO : sketchs ──────────────────────────────────────────────
+  toggleAddSketch(): void {
+    this.addingSketch.update((v) => !v);
+    this.newSketchName = '';
+    this.newSketchPlane = 'XY';
+    this.newSketchEntities = [];
+  }
+
+  private parsePoints(text: string): [number, number][] {
+    return text.split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const [x, y] = line.split(',').map((v) => Number(v.trim()));
+        return [x || 0, y || 0] as [number, number];
+      });
+  }
+
+  addEntity(): void {
+    const f = this.entityField;
+    let entity: CadEntity;
+    switch (this.newEntityType) {
+      case 'segment':
+        entity = { type: 'segment', start: [f.startX, f.startY], end: [f.endX, f.endY] };
+        break;
+      case 'circle':
+        entity = { type: 'circle', center: [f.centerX, f.centerY], radius: f.radius };
+        break;
+      case 'arc':
+        entity = { type: 'arc', start: [f.startX, f.startY], mid: [f.midX, f.midY], end: [f.endX, f.endY] };
+        break;
+      case 'polyline':
+        entity = { type: 'polyline', points: this.parsePoints(f.pointsText), closed: f.closed };
+        break;
+      case 'bspline':
+        entity = { type: 'bspline', points: this.parsePoints(f.pointsText), thickness: f.thickness };
+        break;
+    }
+    this.newSketchEntities = [...this.newSketchEntities, entity];
+  }
+
+  removeEntity(index: number): void {
+    this.newSketchEntities = this.newSketchEntities.filter((_, i) => i !== index);
+  }
+
+  entitySummary(e: CadEntity): string {
+    switch (e.type) {
+      case 'segment': return `segment (${e.start}) → (${e.end})`;
+      case 'circle': return `cercle centre (${e.center}) rayon ${e.radius}`;
+      case 'arc': return `arc (${e.start}) → (${e.mid}) → (${e.end})`;
+      case 'polyline': return `polyligne ${e.points.length} points${e.closed ? ' (fermée)' : ''}`;
+      case 'bspline': return `bspline ${e.points.length} points, épaisseur ${e.thickness ?? '—'}`;
+    }
+  }
+
+  saveSketch(): void {
+    if (!this.newSketchName.trim() || this.newSketchEntities.length === 0) return;
+    this.api.createCadSketch(this.projectId, {
+      name: this.newSketchName.trim(), plane: this.newSketchPlane, entities: this.newSketchEntities,
+    }).subscribe({
+      next: () => { this.toggleAddSketch(); this.reload(); },
+      error: () => { this.error.set('Échec de création du sketch.'); },
+    });
+  }
+
+  deleteSketch(id: number): void {
+    this.api.deleteCadSketch(id).subscribe({ next: () => this.reload() });
+  }
+
+  // ── Conception CAO : historique d'opérations ─────────────────────────────
+  toggleAddOperation(): void {
+    this.addingOperation.update((v) => !v);
+  }
+
+  get isPrimitive(): boolean {
+    return this.newOperationType.startsWith('PRIMITIVE_');
+  }
+
+  private buildParams(): Record<string, unknown> {
+    const o = this.op;
+    const placement = o.usePlacement
+      ? { position: [o.posX, o.posY, o.posZ], rotation_deg: [o.rotX, o.rotY, o.rotZ] }
+      : undefined;
+
+    switch (this.newOperationType) {
+      case 'PRIMITIVE_BOX':
+        return { length: o.length, width: o.width, height: o.height, placement };
+      case 'PRIMITIVE_SPHERE':
+        return { radius: o.radius, placement };
+      case 'PRIMITIVE_CYLINDER':
+        return { radius: o.radius, height: o.height, placement };
+      case 'PRIMITIVE_CONE':
+        return { bottom_radius: o.bottomRadius, top_radius: o.topRadius, height: o.height, placement };
+      case 'PRIMITIVE_TORUS':
+        return { major_radius: o.majorRadius, minor_radius: o.minorRadius, placement };
+      case 'EXTRUDE':
+        return {
+          sketch_id: o.sketchId, mode: o.mode, amount: o.amount, both: o.both,
+          target: o.useTarget ? o.targetId : undefined,
+        };
+      case 'REVOLVE':
+        return {
+          sketch_id: o.sketchId, mode: o.mode, angle_deg: o.angleDeg,
+          axis_origin: [o.axisOriginX, o.axisOriginY, o.axisOriginZ],
+          axis_direction: [o.axisDirX, o.axisDirY, o.axisDirZ],
+          target: o.useTarget ? o.targetId : undefined,
+        };
+      case 'SURFACE_FROM_WIRE':
+        return { sketch_id: o.sketchId };
+      case 'BOOLEAN_UNION':
+      case 'BOOLEAN_CUT':
+      case 'BOOLEAN_INTERSECT':
+        return { source_a: o.sourceAId, source_b: o.sourceBId };
+      case 'PATTERN_CIRCULAR':
+        return {
+          source: o.sourceId, count: o.count, radius: o.patRadius,
+          center: [o.centerX, o.centerY, o.centerZ],
+          axis_direction: [o.patAxisDirX, o.patAxisDirY, o.patAxisDirZ],
+          start_angle_deg: o.startAngleDeg,
+        };
+      case 'PATTERN_LINEAR':
+        return { source: o.sourceId, count: o.count, step: [o.stepX, o.stepY, o.stepZ] };
+      case 'GEAR_TEETH':
+        return {
+          source: o.sourceId, face_index: o.faceIndex, module: o.module,
+          teeth_number: o.teethNumber, pressure_angle: o.pressureAngle,
+          width: o.gearWidth, internal: o.internal,
+        };
+    }
+  }
+
+  addOperation(): void {
+    this.api.createCadOperation(this.projectId, { operation_type: this.newOperationType, params: this.buildParams() }).subscribe({
+      next: () => { this.addingOperation.set(false); this.reload(); },
+      error: (err) => {
+        this.error.set(err?.error?.detail ?? "Échec de création de l'opération.");
+      },
+    });
+  }
+
+  deleteOperation(id: number): void {
+    this.api.deleteCadOperation(id).subscribe({ next: () => this.reload() });
+  }
+
+  operationSummary(op: CadOperation): string {
+    const p = op.params;
+    const keys = Object.keys(p).filter((k) => p[k] !== undefined && p[k] !== null);
+    return keys.map((k) => `${k}=${JSON.stringify(p[k])}`).join(', ');
+  }
+
+  // ── Conception CAO : construction (Job CAD_BUILD) ────────────────────────
+  launchBuild(): void {
+    this.building.set(true);
+    this.api.launchCadBuild(this.projectId, {
+      linear_deflection: this.buildDeflectionLinear(),
+      angular_deflection: this.buildDeflectionAngular(),
+    }).subscribe({
+      next: (job) => { this.building.set(false); this.reload(); this.startPoll(job.id); },
+      error: (err) => {
+        this.building.set(false);
+        this.error.set(
+          err?.status === 409
+            ? "Un job lourd est déjà en cours pour l'atelier — un seul à la fois, tous modules confondus."
+            : (err?.error?.detail ?? 'Échec du lancement de la construction.'),
+        );
+      },
+    });
+  }
+
+  // ── Assemblage : sous-parties ─────────────────────────────────────────────
+  toggleAddSubPart(): void {
+    this.addingSubPart.update((v) => !v);
+    this.newSubPartName = '';
+  }
+
+  addSubPart(): void {
+    if (!this.newSubPartName.trim()) return;
+    this.api.createSubPart(this.projectId, { name: this.newSubPartName.trim() }).subscribe({
+      next: () => { this.toggleAddSubPart(); this.reloadAssembly(); },
+      error: () => { this.error.set('Échec de création de la sous-partie.'); },
+    });
+  }
+
+  // ── Assemblage : instances ────────────────────────────────────────────────
+  toggleAddInstance(): void {
+    this.addingInstance.update((v) => !v);
+    this.newInstanceSourceProjectId = null;
+    this.newInstanceLabel = '';
+  }
+
+  addInstance(): void {
+    if (!this.newInstanceSourceProjectId) return;
+    this.api.createCadInstance(this.projectId, {
+      source_project: this.newInstanceSourceProjectId,
+      label: this.newInstanceLabel.trim() || undefined,
+    }).subscribe({
+      next: () => { this.toggleAddInstance(); this.reloadAssembly(); },
+      error: (err) => { this.error.set(err?.error?.detail ?? "Échec d'ajout de l'instance."); },
+    });
+  }
+
+  deleteInstance(id: number): void {
+    this.api.deleteCadInstance(id).subscribe({ next: () => this.reloadAssembly() });
+  }
+
+  // ── Assemblage : contraintes ──────────────────────────────────────────────
+  toggleAddConstraint(): void {
+    this.addingConstraint.update((v) => !v);
+  }
+
+  get constraintNeedsInstanceB(): boolean {
+    return this.newConstraint.type !== 'FIXED';
+  }
+
+  addConstraint(): void {
+    const c = this.newConstraint;
+    if (!c.instanceAId) return;
+    const params: Record<string, unknown> = {};
+    if (c.type === 'DISTANCE') params['distance_mm'] = c.distanceMm;
+    if (c.type === 'ANGLE') params['angle_deg'] = c.angleDeg;
+
+    this.api.createCadConstraint(this.projectId, {
+      constraint_type: c.type,
+      instance_a: c.instanceAId,
+      reference_a: { kind: c.refAKind, index: c.refAIndex },
+      instance_b: this.constraintNeedsInstanceB ? c.instanceBId : null,
+      reference_b: this.constraintNeedsInstanceB ? { kind: c.refBKind, index: c.refBIndex } : null,
+      params,
+    }).subscribe({
+      next: () => { this.addingConstraint.set(false); this.reloadAssembly(); },
+      error: (err) => { this.error.set(err?.error?.detail ?? 'Échec de pose de la contrainte.'); },
+    });
+  }
+
+  deleteConstraint(id: number): void {
+    this.api.deleteCadConstraint(id).subscribe({ next: () => this.reloadAssembly() });
+  }
+
+  constraintSummary(c: CadAssemblyConstraint): string {
+    const a = `${this.instanceLabel(c.instance_a)}.${c.reference_a.kind}${c.reference_a.index}`;
+    if (c.constraint_type === 'FIXED') return `${a} → monde`;
+    const b = c.instance_b !== null && c.reference_b
+      ? `${this.instanceLabel(c.instance_b)}.${c.reference_b.kind}${c.reference_b.index}`
+      : '?';
+    return `${a} ↔ ${b}`;
+  }
+
+  // ── Assemblage : résolution (Job CAD_ASSEMBLE) ───────────────────────────
+  launchAssemble(): void {
+    this.assembling.set(true);
+    this.api.launchCadAssemble(this.projectId).subscribe({
+      next: (job) => { this.assembling.set(false); this.reload(); this.startPoll(job.id); },
+      error: (err) => {
+        this.assembling.set(false);
+        this.error.set(
+          err?.status === 409
+            ? "Un job lourd est déjà en cours pour l'atelier — un seul à la fois, tous modules confondus."
+            : (err?.error?.detail ?? "Échec du lancement de l'assemblage."),
+        );
+      },
     });
   }
 }

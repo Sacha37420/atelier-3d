@@ -27,9 +27,13 @@ from django.core.files import File
 from django.db.models import Max
 from PIL import Image, ImageOps
 
+import build123d as bd
+
+from . import cad_assemble as cad_assemble_module
+from . import cad_build as cad_build_module
 from . import facade as facade_module
 from . import repair as repair_module
-from .models import Job, Mesh, Photo, PhotoLabel, SemanticClass
+from .models import Job, Mesh, Photo, PhotoLabel, Project, SemanticClass
 from .reconstruction import PRESETS, DEFAULT_PRESET
 
 
@@ -447,4 +451,214 @@ def run_facade_segmentation(self, job_id: int):
             ),
         )
     except Exception as exc:
+        job.set_state(status=Job.ERROR, message=str(exc))
+
+
+@shared_task(bind=True)
+def run_cad_build(self, job_id: int):
+    """
+    Job CAD_BUILD (Lot 5.1, module Conception CAO) : évalue l'historique
+    CadOperation du projet en un nouveau Mesh (STEP exact + glTF tessellé),
+    via cad_build.py (build123d/cq_gears). Même verrou global que les autres
+    jobs lourds (posé côté vue, cf. CadBuildLaunchView) — en pratique un
+    calcul de quelques secondes à quelques minutes, pas d'estimation de durée
+    exposée contrairement à Reconstruction/Segmentation (pas dans le besoin
+    du Lot 5, cf. to_do_3D.md).
+    """
+    job = Job.objects.select_related('project').get(pk=job_id)
+    job.celery_task_id = self.request.id
+    job.save(update_fields=['celery_task_id'])
+
+    project = job.project
+    start = time.monotonic()
+    try:
+        job.set_state(status=Job.RUNNING, progress=10, message="Évaluation de l'historique CAO…")
+        operations = list(project.cad_operations.order_by('order'))
+        if not operations:
+            raise cad_build_module.CadBuildError(
+                "Aucune opération CAO à évaluer pour ce projet."
+            )
+        sketches_by_id = {s.id: s for s in project.cad_sketches.all()}
+        shape = cad_build_module.evaluate_operations(operations, sketches_by_id)
+
+        job.set_state(progress=50, message="Export STEP…")
+        workdir = Path(settings.MEDIA_ROOT) / 'projects' / str(project.id) / f'work_{job.id}'
+        workdir.mkdir(parents=True, exist_ok=True)
+        version = (project.meshes.aggregate(v=Max('version'))['v'] or 0) + 1
+        mesh = Mesh(project=project, job=job, version=version)
+
+        step_path = workdir / f'cad_v{version}.step'
+        bd.export_step(shape, str(step_path))
+        with open(step_path, 'rb') as fh:
+            mesh.step_file.save(f'cad_v{version}.step', File(fh), save=False)
+
+        # Tessellation OCCT (BRepMesh_IncrementalMesh, à déflections réglables,
+        # cf. to_do_3D.md) → PLY pivot (mesh.file, lu tel quel par Impression/
+        # Mouvements/Bâtiments, cf. to_do_3D.md « Architecture actuelle ») +
+        # glTF pour le viewer. OCCT tessellise chaque face indépendamment : les
+        # sommets d'une arête partagée par deux faces ne sont PAS fusionnés
+        # d'office (constaté : la liste de sommets brute n'est pas watertight
+        # même pour un solide valide) — merge_vertices() les ressoude, seul
+        # moyen d'obtenir un maillage réellement watertight et des comptes
+        # sommets/faces cohérents avec le reste de l'app (qui les lit sur un
+        # Trimesh unique, jamais sur une Scene multi-géométries).
+        job.set_state(progress=75, message="Tessellation du maillage…")
+        linear_deflection = float(job.params.get('linear_deflection', 0.1))
+        angular_deflection = float(job.params.get('angular_deflection', 0.3))
+        vertices, triangles = shape.tessellate(linear_deflection, angular_deflection)
+        vertices_np = [(v.X, v.Y, v.Z) for v in vertices]
+        geom = trimesh.Trimesh(vertices=vertices_np, faces=triangles, process=False)
+        geom.merge_vertices()
+
+        ply_path = workdir / f'cad_v{version}.ply'
+        geom.export(str(ply_path))
+        with open(ply_path, 'rb') as fh:
+            mesh.file.save(f'cad_v{version}.ply', File(fh), save=False)
+
+        # Export glTF best-effort, comme pour les autres jobs (cf.
+        # _save_mesh_result) : le PLY reste exploitable même si celui-ci échoue.
+        try:
+            gltf_path = workdir / f'cad_v{version}.glb'
+            geom.export(str(gltf_path))
+            with open(gltf_path, 'rb') as fh:
+                mesh.gltf_file.save(f'cad_v{version}.glb', File(fh), save=False)
+        except Exception:
+            pass
+
+        mesh.vertex_count = len(geom.vertices)
+        mesh.face_count = len(geom.faces)
+        mesh.is_watertight = bool(geom.is_watertight)
+        mesh.linear_deflection = linear_deflection
+        mesh.angular_deflection = angular_deflection
+        mesh.save()
+
+        elapsed = time.monotonic() - start
+        job.duration_seconds = elapsed
+        job.save(update_fields=['duration_seconds'])
+        job.set_state(
+            status=Job.DONE, progress=100,
+            message=(
+                f"Construction CAO terminée : {mesh.vertex_count or '?'} sommets / "
+                f"{mesh.face_count or '?'} faces, calculé en {int(elapsed // 60)}m{int(elapsed % 60):02d}s."
+            ),
+        )
+    except Exception as exc:
+        job.set_state(status=Job.ERROR, message=str(exc))
+
+
+@shared_task(bind=True)
+def run_cad_assemble(self, job_id: int):
+    """
+    Job CAD_ASSEMBLE (Lot 5.2, module Conception CAO) : résout un
+    Project(ASSEMBLY) via cad_assemble.py (FreeCAD headless, workbench
+    Assembly/OndselSolver) — même verrou global que les autres jobs lourds
+    (posé côté vue, cf. CadAssembleLaunchView). Sauvegarde le placement résolu
+    de chaque CadAssemblyInstance, puis exporte le composé replacé en un
+    nouveau Mesh du Project(ASSEMBLY) (STEP + glTF), réutilisant exactement le
+    même pipeline de tessellation que run_cad_build (round-trip par STEP pour
+    ré-importer le composé FreeCAD/OCCT dans build123d/OCP, cf. cad_assemble.py
+    — les deux bindings OCCT ne sont pas directement interopérables en mémoire).
+    """
+    job = Job.objects.select_related('project').get(pk=job_id)
+    job.celery_task_id = self.request.id
+    job.save(update_fields=['celery_task_id'])
+
+    project = job.project
+    start = time.monotonic()
+    try:
+        workdir = Path(settings.MEDIA_ROOT) / 'projects' / str(project.id) / f'work_{job.id}'
+        workdir.mkdir(parents=True, exist_ok=True)
+
+        job.set_state(status=Job.RUNNING, progress=10, message="Résolution de l'assemblage (FreeCAD)…")
+        placements = cad_assemble_module.resolve_assembly(project, workdir)
+
+        job.set_state(progress=40, message="Enregistrement des placements résolus…")
+        for instance in project.cad_instances.all():
+            instance.placement = placements[str(instance.id)]
+            instance.save(update_fields=['placement'])
+
+        job.set_state(progress=55, message="Export STEP de l'assemblage…")
+        version = (project.meshes.aggregate(v=Max('version'))['v'] or 0) + 1
+        mesh = Mesh(project=project, job=job, version=version)
+
+        step_path = workdir / 'assembly_result.step'
+
+        # Round-trip STEP -> build123d/OCP : cf. cad_assemble.py, les deux
+        # bindings OCCT (FreeCAD natif côté worker freecadcmd, OCP ici) ne
+        # s'échangent pas de forme en mémoire, seulement via fichier — le
+        # worker a déjà écrit ce STEP, on le relit tel quel.
+        bd_shape = bd.import_step(str(step_path))
+        with open(step_path, 'rb') as fh:
+            mesh.step_file.save(f'cad_v{version}.step', File(fh), save=False)
+
+        job.set_state(progress=75, message="Tessellation du maillage…")
+        linear_deflection = float(job.params.get('linear_deflection', 0.1))
+        angular_deflection = float(job.params.get('angular_deflection', 0.3))
+        vertices, triangles = bd_shape.tessellate(linear_deflection, angular_deflection)
+        vertices_np = [(v.X, v.Y, v.Z) for v in vertices]
+        geom = trimesh.Trimesh(vertices=vertices_np, faces=triangles, process=False)
+        geom.merge_vertices()
+
+        ply_path = workdir / f'cad_v{version}.ply'
+        geom.export(str(ply_path))
+        with open(ply_path, 'rb') as fh:
+            mesh.file.save(f'cad_v{version}.ply', File(fh), save=False)
+
+        # glTF de l'assemblage : un noeud nommé PAR INSTANCE (pas le composé
+        # fusionné ci-dessus, qui perdrait quelle face appartient à quelle
+        # pièce) — cf. to_do_3D.md / demande utilisateur : pouvoir
+        # afficher/masquer chaque pièce dans le viewer. Chaque instance est
+        # tessellée depuis SON PROPRE STEP (pas depuis le composé), puis
+        # replacée via le placement résolu (position + quaternion) — plus
+        # robuste que d'indexer les solides du composé par position, qui
+        # dépendrait de l'ordre de préservation à travers l'aller-retour STEP.
+        try:
+            scene = trimesh.Scene()
+            for instance in project.cad_instances.select_related('source_mesh').all():
+                inst_shape = bd.import_step(instance.source_mesh.step_file.path)
+                inst_vertices, inst_triangles = inst_shape.tessellate(linear_deflection, angular_deflection)
+                inst_vertices_np = [(v.X, v.Y, v.Z) for v in inst_vertices]
+                inst_geom = trimesh.Trimesh(vertices=inst_vertices_np, faces=inst_triangles, process=False)
+                inst_geom.merge_vertices()
+
+                plc = instance.placement
+                qx, qy, qz, qw = plc['quaternion_xyzw']
+                transform = trimesh.transformations.quaternion_matrix([qw, qx, qy, qz])
+                transform[:3, 3] = plc['position']
+                inst_geom.apply_transform(transform)
+
+                node_name = instance.label or f'instance_{instance.id}'
+                scene.add_geometry(inst_geom, node_name=node_name, geom_name=node_name)
+
+            gltf_path = workdir / f'cad_v{version}.glb'
+            scene.export(str(gltf_path))
+            with open(gltf_path, 'rb') as fh:
+                mesh.gltf_file.save(f'cad_v{version}.glb', File(fh), save=False)
+        except Exception:
+            pass
+
+        mesh.vertex_count = len(geom.vertices)
+        mesh.face_count = len(geom.faces)
+        mesh.is_watertight = bool(geom.is_watertight)
+        mesh.linear_deflection = linear_deflection
+        mesh.angular_deflection = angular_deflection
+        mesh.save()
+
+        project.assembly_status = Project.SOLVED
+        project.save(update_fields=['assembly_status'])
+
+        elapsed = time.monotonic() - start
+        job.duration_seconds = elapsed
+        job.save(update_fields=['duration_seconds'])
+        job.set_state(
+            status=Job.DONE, progress=100,
+            message=(
+                f"Assemblage résolu : {len(placements)} instance(s) placée(s), "
+                f"{mesh.vertex_count or '?'} sommets / {mesh.face_count or '?'} faces, "
+                f"calculé en {int(elapsed // 60)}m{int(elapsed % 60):02d}s."
+            ),
+        )
+    except Exception as exc:
+        project.assembly_status = Project.ASSEMBLY_ERROR
+        project.save(update_fields=['assembly_status'])
         job.set_state(status=Job.ERROR, message=str(exc))

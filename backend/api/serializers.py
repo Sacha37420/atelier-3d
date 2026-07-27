@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import Department, UserRecord, Project, Photo, Job, Mesh, Part, Joint, PhotoLabel, SemanticClass
+from .models import (
+    Department, UserRecord, Project, Photo, Job, Mesh, Part, Joint, PhotoLabel, SemanticClass,
+    CadSketch, CadOperation, CadAssemblyInstance, CadAssemblyConstraint,
+)
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -43,7 +46,8 @@ class MeshSerializer(serializers.ModelSerializer):
     class Meta:
         model = Mesh
         fields = ['id', 'project', 'job', 'file', 'gltf_file', 'version',
-                  'vertex_count', 'face_count', 'is_watertight', 'repair_report', 'created_at']
+                  'vertex_count', 'face_count', 'is_watertight', 'repair_report',
+                  'step_file', 'linear_deflection', 'angular_deflection', 'created_at']
         read_only_fields = fields
 
 
@@ -75,13 +79,15 @@ class ProjectSerializer(serializers.ModelSerializer):
     has_active_job = serializers.BooleanField(read_only=True)
     has_mesh = serializers.BooleanField(read_only=True)
     has_resolved_poses = serializers.BooleanField(read_only=True)
+    sub_parts_count = serializers.IntegerField(source='sub_parts.count', read_only=True)
 
     class Meta:
         model = Project
         fields = ['id', 'name', 'description', 'project_type', 'scale_meters_per_unit',
-                  'has_scale', 'has_active_job', 'has_mesh', 'has_resolved_poses', 'photo_count',
-                  'owner_email', 'created_at', 'updated_at']
-        read_only_fields = ['owner_email', 'created_at', 'updated_at']
+                  'assembly_status', 'parent_project', 'has_scale', 'has_active_job', 'has_mesh',
+                  'has_resolved_poses', 'sub_parts_count', 'photo_count', 'owner_email',
+                  'created_at', 'updated_at']
+        read_only_fields = ['assembly_status', 'parent_project', 'owner_email', 'created_at', 'updated_at']
 
 
 class ProjectDetailSerializer(ProjectSerializer):
@@ -110,3 +116,36 @@ class SemanticClassSerializer(serializers.ModelSerializer):
         model = SemanticClass
         fields = ['id', 'mesh', 'name', 'color', 'face_ids', 'face_count', 'created_at']
         read_only_fields = fields
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ATELIER 3D — Lot 5 : Conception CAO manuelle et Assemblage
+# ──────────────────────────────────────────────────────────────────────────────
+class CadSketchSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CadSketch
+        fields = ['id', 'project', 'name', 'plane', 'entities', 'created_at', 'updated_at']
+        read_only_fields = ['project', 'created_at', 'updated_at']
+
+
+class CadOperationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CadOperation
+        fields = ['id', 'project', 'order', 'operation_type', 'params', 'created_at', 'updated_at']
+        read_only_fields = ['project', 'created_at', 'updated_at']
+
+
+class CadAssemblyInstanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CadAssemblyInstance
+        fields = ['id', 'assembly_project', 'source_project', 'source_mesh',
+                  'label', 'placement', 'created_at']
+        read_only_fields = ['assembly_project', 'placement', 'created_at']
+
+
+class CadAssemblyConstraintSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CadAssemblyConstraint
+        fields = ['id', 'assembly_project', 'constraint_type', 'instance_a', 'reference_a',
+                  'instance_b', 'reference_b', 'params', 'created_at']
+        read_only_fields = ['assembly_project', 'created_at']

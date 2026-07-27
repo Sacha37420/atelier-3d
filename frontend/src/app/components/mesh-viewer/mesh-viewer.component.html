@@ -39,12 +39,36 @@
     }
   </div>
 
-  <div #canvasHost class="canvas-host">
-    @if (loading()) {
-      <div class="overlay">Chargement du maillage…</div>
-    }
-    @if (loadError()) {
-      <div class="overlay error">{{ loadError() }}</div>
+  <div class="viewer-body">
+    <div #canvasHost class="canvas-host">
+      @if (loading()) {
+        <div class="overlay">Chargement du maillage…</div>
+      }
+      @if (loadError()) {
+        <div class="overlay error">{{ loadError() }}</div>
+      }
+    </div>
+
+    @if (parts().length > 1) {
+      <div class="parts-panel">
+        <div class="parts-header">
+          <span>Pièces ({{ parts().length }})</span>
+          <button type="button" class="btn-ghost small" (click)="showAllParts()">Tout afficher</button>
+        </div>
+        <ul class="parts-list">
+          @for (p of parts(); track p.name) {
+            <li>
+              <label>
+                <input type="checkbox" [checked]="p.visible" (change)="togglePartVisibility(p.name)" />
+                {{ p.name }}
+              </label>
+              <button type="button" class="btn-ghost small" (click)="isolatePart(p.name)" title="N'afficher que cette pièce">
+                Isoler
+              </button>
+            </li>
+          }
+        </ul>
+      </div>
     }
   </div>
 </div>

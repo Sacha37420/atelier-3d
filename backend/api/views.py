@@ -4,6 +4,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Max
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.text import get_valid_filename
@@ -14,13 +15,20 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 
 from . import facade, reconstruction, repair, segmentation, video_import
-from .models import Department, UserRecord, Project, Photo, Job, Mesh, Part, Joint, PhotoLabel, SemanticClass
+from .models import (
+    Department, UserRecord, Project, Photo, Job, Mesh, Part, Joint, PhotoLabel, SemanticClass,
+    CadSketch, CadOperation, CadAssemblyInstance, CadAssemblyConstraint,
+)
 from .serializers import (
     DepartmentSerializer, UserRecordSerializer,
     ProjectSerializer, ProjectDetailSerializer, PhotoSerializer, JobSerializer,
     PartSerializer, JointSerializer, PhotoLabelSerializer, SemanticClassSerializer,
+    CadSketchSerializer, CadOperationSerializer,
+    CadAssemblyInstanceSerializer, CadAssemblyConstraintSerializer,
 )
-from .tasks import run_reconstruction, run_repair, run_facade_segmentation
+from .tasks import (
+    run_reconstruction, run_repair, run_facade_segmentation, run_cad_build, run_cad_assemble,
+)
 
 
 class MeView(APIView):
@@ -71,9 +79,16 @@ class UserListView(generics.ListAPIView):
 # ATELIER 3D — Lot 1 : Reconstruction
 # ──────────────────────────────────────────────────────────────────────────────
 class ProjectListCreateView(generics.ListCreateAPIView):
-    """GET /api/projects/ — liste ; POST /api/projects/ — crée un projet."""
+    """
+    GET /api/projects/ — liste des projets TOP-LEVEL uniquement
+    (`parent_project` nul) : une sous-partie CAO (Lot 5.1) rattachée à un
+    Project(ASSEMBLY) n'apparaît plus ici, seulement dans
+    `/api/projects/<id>/sub-parts/` de son parent (cf. décision du 2026-07-26 —
+    les pièces individuelles ne sont pas des projets indépendants).
+    POST /api/projects/ — crée un projet top-level.
+    """
 
-    queryset = Project.objects.all()
+    queryset = Project.objects.filter(parent_project__isnull=True)
     serializer_class = ProjectSerializer
 
     def perform_create(self, serializer):
@@ -760,3 +775,245 @@ class SemanticClassListView(generics.ListAPIView):
 
     def get_queryset(self):
         return SemanticClass.objects.filter(mesh_id=self.kwargs['mesh_id'])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ATELIER 3D — Lot 5 : Conception CAO manuelle (modélisation de pièces)
+# ──────────────────────────────────────────────────────────────────────────────
+class CadSketchListCreateView(APIView):
+    """
+    GET  /api/projects/<id>/cad-sketches/ — sketches d'un projet CAO.
+    POST /api/projects/<id>/cad-sketches/ — crée un sketch (plan de référence
+    + entités 2D, cf. cad_build.py pour le format attendu par type d'entité).
+    """
+
+    def get(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        return Response(CadSketchSerializer(project.cad_sketches.all(), many=True).data)
+
+    def post(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        serializer = CadSketchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(project=project)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class CadSketchDetailView(APIView):
+    """PATCH/DELETE /api/cad-sketches/<id>/"""
+
+    def patch(self, request, pk):
+        sketch = get_object_or_404(CadSketch, pk=pk)
+        serializer = CadSketchSerializer(sketch, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, pk):
+        sketch = get_object_or_404(CadSketch, pk=pk)
+        sketch.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CadOperationListCreateView(APIView):
+    """
+    GET  /api/projects/<id>/cad-operations/ — historique d'opérations CAO,
+    dans l'ordre.
+    POST /api/projects/<id>/cad-operations/ — ajoute une opération à la fin
+    de l'historique (`order` = max existant + 1 si non fourni).
+    """
+
+    def get(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        return Response(CadOperationSerializer(project.cad_operations.all(), many=True).data)
+
+    def post(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        data = request.data.copy()
+        if not data.get('order'):
+            data['order'] = (project.cad_operations.aggregate(m=Max('order'))['m'] or 0) + 1
+        serializer = CadOperationSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(project=project)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class CadOperationDetailView(APIView):
+    """PATCH/DELETE /api/cad-operations/<id>/"""
+
+    def patch(self, request, pk):
+        operation = get_object_or_404(CadOperation, pk=pk)
+        serializer = CadOperationSerializer(operation, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, pk):
+        operation = get_object_or_404(CadOperation, pk=pk)
+        operation.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CadBuildLaunchView(APIView):
+    """
+    POST /api/projects/<id>/cad-build/ — lance le job CAD_BUILD (évalue
+    l'historique CadOperation du projet en un nouveau Mesh, cf. cad_build.py
+    et tasks.run_cad_build). Body optionnel : `linear_deflection`/
+    `angular_deflection` (tessellation, défauts 0.1/0.3 — cf. to_do_3D.md,
+    exposés comme paramètres utilisateur). Même verrou global que les autres
+    jobs lourds : un seul actif à la fois, tous modules confondus.
+    """
+
+    def post(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        if not project.cad_operations.exists():
+            return Response({'detail': "Aucune opération CAO à évaluer pour ce projet."},
+                             status=status.HTTP_400_BAD_REQUEST)
+
+        params = {}
+        for key in ('linear_deflection', 'angular_deflection'):
+            if key in request.data:
+                try:
+                    params[key] = float(request.data[key])
+                except (TypeError, ValueError):
+                    return Response({'detail': f"'{key}' invalide."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            if Job.objects.select_for_update().filter(status__in=[Job.PENDING, Job.RUNNING]).exists():
+                return Response(
+                    {'detail': "Un job lourd est déjà en cours pour l'atelier — un seul à la fois, "
+                               "tous modules confondus. Réessayer une fois celui-ci terminé."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            job = Job.objects.create(
+                project=project, kind=Job.CAD_BUILD, status=Job.PENDING, params=params,
+                owner_email=getattr(request.user, 'email', ''),
+            )
+            transaction.on_commit(lambda: run_cad_build.delay(job.id))
+
+        return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
+
+
+class SubPartListCreateView(APIView):
+    """
+    GET  /api/projects/<id>/sub-parts/ — sous-parties CAO d'un projet (Lot
+    5.1 : chacune garde son propre historique CadSketch/CadOperation et son
+    propre Mesh, cf. cad_build.py — simplement rattachée à ce parent au lieu
+    d'être un projet top-level, cf. décision du 2026-07-26).
+    POST /api/projects/<id>/sub-parts/ — crée une nouvelle sous-partie
+    (`project_type=OBJECT` par défaut, `parent_project` forcé au parent).
+    """
+
+    def get(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        return Response(ProjectSerializer(project.sub_parts.all(), many=True).data)
+
+    def post(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        data = request.data.copy()
+        data.pop('parent_project', None)
+        serializer = ProjectSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(
+            parent_project=project, project_type=data.get('project_type', Project.OBJECT),
+            owner_email=getattr(request.user, 'email', ''),
+        )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class CadAssemblyInstanceListCreateView(APIView):
+    """
+    GET  /api/projects/<id>/cad-instances/ — instances placées dans un
+    Project(ASSEMBLY).
+    POST /api/projects/<id>/cad-instances/ — ajoute une instance (référence
+    une sous-partie + son Mesh le plus récent par défaut si non précisé).
+    """
+
+    def get(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        return Response(CadAssemblyInstanceSerializer(project.cad_instances.all(), many=True).data)
+
+    def post(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        data = request.data.copy()
+        source_project = get_object_or_404(Project, pk=data.get('source_project'), parent_project=project)
+        if not data.get('source_mesh'):
+            latest = source_project.meshes.order_by('-version').first()
+            if latest is None:
+                return Response(
+                    {'detail': f"« {source_project.name} » n'a encore aucun Mesh (CAD_BUILD requis avant assemblage)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            data['source_mesh'] = latest.id
+        serializer = CadAssemblyInstanceSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(assembly_project=project)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class CadAssemblyInstanceDetailView(APIView):
+    """DELETE /api/cad-instances/<id>/"""
+
+    def delete(self, request, pk):
+        instance = get_object_or_404(CadAssemblyInstance, pk=pk)
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CadAssemblyConstraintListCreateView(APIView):
+    """
+    GET  /api/projects/<id>/cad-constraints/ — contraintes posées dans un
+    Project(ASSEMBLY).
+    POST /api/projects/<id>/cad-constraints/ — pose une contrainte entre deux
+    CadAssemblyInstance (une seule si FIXED, cf. modèle).
+    """
+
+    def get(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        return Response(CadAssemblyConstraintSerializer(project.cad_constraints.all(), many=True).data)
+
+    def post(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        serializer = CadAssemblyConstraintSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(assembly_project=project)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class CadAssemblyConstraintDetailView(APIView):
+    """DELETE /api/cad-constraints/<id>/"""
+
+    def delete(self, request, pk):
+        constraint = get_object_or_404(CadAssemblyConstraint, pk=pk)
+        constraint.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CadAssembleLaunchView(APIView):
+    """
+    POST /api/projects/<id>/cad-assemble/ — lance le job CAD_ASSEMBLE (résout
+    les CadAssemblyConstraint du Project(ASSEMBLY) via FreeCAD headless, cf.
+    cad_assemble.py et tasks.run_cad_assemble). Même verrou global que les
+    autres jobs lourds.
+    """
+
+    def post(self, request, pk):
+        project = get_object_or_404(Project, pk=pk, project_type=Project.ASSEMBLY)
+        if not project.cad_constraints.exists():
+            return Response({'detail': "Aucune contrainte posée pour cet assemblage."},
+                             status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            if Job.objects.select_for_update().filter(status__in=[Job.PENDING, Job.RUNNING]).exists():
+                return Response(
+                    {'detail': "Un job lourd est déjà en cours pour l'atelier — un seul à la fois, "
+                               "tous modules confondus. Réessayer une fois celui-ci terminé."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            job = Job.objects.create(
+                project=project, kind=Job.CAD_ASSEMBLE, status=Job.PENDING,
+                owner_email=getattr(request.user, 'email', ''),
+            )
+            transaction.on_commit(lambda: run_cad_assemble.delay(job.id))
+
+        return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)

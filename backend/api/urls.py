@@ -8,6 +8,12 @@ from .views import (
     JointListCreateView, JointDetailView, SuggestJointAxisView,
     PhotoRegionsView, PhotoLabelListCreateView, PhotoLabelDetailView,
     FacadeEstimateView, FacadeLaunchView, SemanticClassListView,
+    CadSketchListCreateView, CadSketchDetailView,
+    CadOperationListCreateView, CadOperationDetailView, CadBuildLaunchView,
+    SubPartListCreateView,
+    CadAssemblyInstanceListCreateView, CadAssemblyInstanceDetailView,
+    CadAssemblyConstraintListCreateView, CadAssemblyConstraintDetailView,
+    CadAssembleLaunchView,
 )
 
 urlpatterns = [
@@ -43,4 +49,17 @@ urlpatterns = [
 
     path('jobs/',          JobListView.as_view()),
     path('jobs/<int:pk>/', JobDetailView.as_view()),
+
+    path('projects/<int:pk>/cad-sketches/',   CadSketchListCreateView.as_view()),
+    path('cad-sketches/<int:pk>/',            CadSketchDetailView.as_view()),
+    path('projects/<int:pk>/cad-operations/', CadOperationListCreateView.as_view()),
+    path('cad-operations/<int:pk>/',          CadOperationDetailView.as_view()),
+    path('projects/<int:pk>/cad-build/',      CadBuildLaunchView.as_view()),
+
+    path('projects/<int:pk>/sub-parts/',       SubPartListCreateView.as_view()),
+    path('projects/<int:pk>/cad-instances/',   CadAssemblyInstanceListCreateView.as_view()),
+    path('cad-instances/<int:pk>/',            CadAssemblyInstanceDetailView.as_view()),
+    path('projects/<int:pk>/cad-constraints/', CadAssemblyConstraintListCreateView.as_view()),
+    path('cad-constraints/<int:pk>/',          CadAssemblyConstraintDetailView.as_view()),
+    path('projects/<int:pk>/cad-assemble/',    CadAssembleLaunchView.as_view()),
 ]

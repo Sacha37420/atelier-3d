@@ -4,6 +4,17 @@
   margin: 0 auto;
 }
 
+.equivalence-note {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--accent-tint);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--text);
+
+  a { color: var(--accent-deep); font-weight: 600; }
+}
+
 .new-project {
   display: flex;
   gap: var(--space-3);

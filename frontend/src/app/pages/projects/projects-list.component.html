@@ -1,5 +1,11 @@
 <main class="page-projects">
   <h2>Projets de reconstruction</h2>
+  <p class="equivalence-note">
+    Chaque projet peut être initialisé de deux façons strictement équivalentes : à partir de
+    <strong>photos</strong> ou par <strong>conception CAO</strong> (sketchs + opérations) — le choix se fait à
+    l'intérieur du projet, une fois créé. Dans les deux cas, le résultat est un maillage utilisable ensuite
+    exactement de la même façon (Impression 3D, Mouvements, Bâtiments).
+  </p>
 
   <form class="new-project" (ngSubmit)="createProject()">
     <input type="text" name="name" placeholder="Nom du projet…" [(ngModel)]="newName" required />

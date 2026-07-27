@@ -36,9 +36,23 @@
   &:hover { border-color: var(--accent); }
 }
 
+.viewer-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
 .canvas-host {
   position: relative;
   flex: 1;
+  // Sans ça : un flex-item a un min-width:auto implicite basé sur son
+  // contenu — le <canvas> ayant une taille de rendu figée par three.js
+  // (renderer.setSize, appelé avant que le panneau de pièces n'existe),
+  // .canvas-host refuse de rétrécir pour lui laisser de la place, qui se
+  // retrouve donc rendu hors du cadre visible de la carte (vérifié en
+  // capturant le rendu réel : le panneau existe dans le DOM avec une taille
+  // non nulle, mais déborde du conteneur, invisible à l'écran).
+  min-width: 0;
   min-height: 380px;
 
   canvas { display: block; }
@@ -55,4 +69,53 @@
   background: color-mix(in srgb, var(--card) 70%, transparent);
 
   &.error { color: var(--danger); }
+}
+
+.parts-panel {
+  width: 200px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  padding: var(--space-3);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.parts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.parts-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+
+  li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    word-break: break-word;
+    cursor: pointer;
+  }
+}
+
+.btn-ghost.small {
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
 }

@@ -153,6 +153,97 @@
 .warning-text { color: var(--warning); }
 .hint { color: var(--text-mute); font-size: var(--text-xs); margin-top: var(--space-2); }
 
+.equivalence-note {
+  padding: var(--space-3) var(--space-4);
+  background: var(--accent-tint);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--text);
+  margin-bottom: var(--space-4);
+
+  a { color: var(--accent-deep); font-weight: 600; }
+}
+
+.init-mode-picker h3 { margin-bottom: var(--space-3); }
+
+.mode-toggle {
+  display: flex;
+  gap: var(--space-3);
+
+  .btn-ghost { flex: 1; justify-content: center; font-size: var(--text-base, 1rem); }
+}
+
+.btn-ghost.small { min-height: 28px; padding: 0 var(--space-3); font-size: var(--text-xs); }
+
+.cad-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+
+  li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    background: var(--accent-tint);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+
+    span { word-break: break-word; }
+  }
+}
+
+.sub-form {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  background: var(--accent-tint);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: flex-start;
+
+  > label {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--text-sm);
+    width: 100%;
+
+    input, select, textarea { height: 36px; padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: inherit; }
+    textarea { height: auto; padding: var(--space-2); resize: vertical; }
+  }
+
+  h4 { margin-top: var(--space-2); }
+}
+
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  width: 100%;
+
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--text-sm);
+    flex: 1 1 120px;
+
+    input { height: 36px; padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); width: 100%; }
+  }
+}
+
+label.checkbox {
+  flex-direction: row !important;
+  align-items: center;
+  gap: var(--space-2) !important;
+  width: auto !important;
+}
+
 .job-progress .bar {
   height: 10px;
   background: var(--border);

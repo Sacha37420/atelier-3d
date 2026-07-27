@@ -21,3 +21,8 @@ frontend/node_modules/
 # ── Divers ───────────────────────────────────────────────────────────────────
 *.log
 .DS_Store
+
+# ── Cache de build (scripts/clean2.sh + scripts/recompose_docker.sh) ────────
+# Empreinte locale du dernier Dockerfile "lourd" buildé avec succès — .heavy-build
+# (le marqueur lui-même) reste versionné, seule cette empreinte générée est locale.
+.heavy-build.sha256

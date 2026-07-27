@@ -7,8 +7,23 @@
     <header class="project-header">
       <h2>{{ project.name }}</h2>
       <div class="badges">
-        <span class="badge">{{ project.project_type === 'batiment' ? 'Bâtiment' : 'Objet' }}</span>
-        <span class="badge">{{ project.photo_count }} photo(s)</span>
+        @if (project.project_type === 'assembly') {
+          <span class="badge">Assemblage</span>
+          @if (project.assembly_status) {
+            <span class="badge" [class.success]="project.assembly_status === 'SOLVED'" [class.warning]="project.assembly_status === 'DRAFT'" [class.error]="project.assembly_status === 'ERROR'">
+              {{ project.assembly_status === 'SOLVED' ? 'Résolu' : project.assembly_status === 'ERROR' ? 'Erreur' : 'Brouillon' }}
+            </span>
+          }
+        } @else {
+          <span class="badge">{{ project.project_type === 'batiment' ? 'Bâtiment' : 'Objet' }}</span>
+          <span class="badge">{{ project.photo_count }} photo(s)</span>
+          @if (operations().length > 0) {
+            <span class="badge">{{ operations().length }} opération(s) CAO</span>
+          }
+        }
+        @if (project.parent_project) {
+          <a class="badge" [routerLink]="['/projects', project.parent_project]">← sous-partie de l'assemblage</a>
+        }
       </div>
     </header>
 
@@ -16,104 +31,717 @@
       <p class="error">{{ error() }}</p>
     }
 
-    <!-- ── Dépôt de photos / vidéo ────────────────────────────────────────── -->
-    <section class="card">
-      <h3>Photos</h3>
-      <div
-        class="dropzone"
-        [class.dragover]="dragOver()"
-        (dragover)="onDragOver($event)"
-        (dragleave)="onDragLeave()"
-        (drop)="onDrop($event)"
-      >
-        @if (uploading()) {
-          <p>Envoi en cours…</p>
+    <!-- ══════════════════════════ PROJET ASSEMBLAGE (Lot 5.2) ═══════════════ -->
+    @if (isAssembly()) {
+      <!-- ── Sous-parties ────────────────────────────────────────────────────── -->
+      <section class="card">
+        <div class="viewer-header">
+          <h3>Sous-parties ({{ subParts().length }})</h3>
+          <button type="button" class="btn-ghost" [class.active]="addingSubPart()" (click)="toggleAddSubPart()">
+            {{ addingSubPart() ? 'Annuler' : '+ Sous-partie' }}
+          </button>
+        </div>
+        <p class="equivalence-note">
+          Chaque sous-partie est un projet CAO à part entière (sketchs, historique d'opérations, construction) —
+          cliquer dessus pour l'ouvrir et la modifier. Une fois construites, elles se placent ci-dessous comme
+          instances de l'assemblage.
+        </p>
+
+        @if (subParts().length > 0) {
+          <ul class="cad-list">
+            @for (sp of subParts(); track sp.id) {
+              <li>
+                <a [routerLink]="['/projects', sp.id]">
+                  <strong>{{ sp.name }}</strong> — {{ sp.has_mesh ? 'maillage construit' : 'pas encore construite' }}
+                </a>
+              </li>
+            }
+          </ul>
         } @else {
-          <p>Glisser-déposer des photos ou une vidéo ici</p>
-          <div class="dropzone-actions">
-            <label class="btn-ghost">
-              Choisir des photos…
-              <input type="file" accept="image/*" multiple (change)="onPhotoInputChange($event)" hidden />
-            </label>
-            <label class="btn-ghost">
-              Choisir une vidéo…
-              <input type="file" accept="video/*" (change)="onVideoInputChange($event)" hidden />
-            </label>
+          <p class="muted">Aucune sous-partie pour l'instant.</p>
+        }
+
+        @if (addingSubPart()) {
+          <div class="sub-form">
+            <label>Nom : <input type="text" [(ngModel)]="newSubPartName" /></label>
+            <button type="button" class="btn-primary" [disabled]="!newSubPartName.trim()" (click)="addSubPart()">
+              Créer la sous-partie
+            </button>
           </div>
         }
-      </div>
+      </section>
 
-      @if (project.photos.length > 0) {
-        <div class="photo-grid">
-          @for (photo of project.photos; track photo.id) {
-            <div class="thumb" [class.resolved]="photo.pose_resolved" [class.unresolved]="photo.camera_pose === null && lastFinishedJob()?.kind === 'RECONSTRUCTION'">
-              <img [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
-              <button type="button" class="thumb-remove" (click)="deletePhoto(photo.id)" title="Retirer">✕</button>
+      <!-- ── Instances placées dans l'assemblage ─────────────────────────────── -->
+      <section class="card">
+        <div class="viewer-header">
+          <h3>Instances ({{ cadInstances().length }})</h3>
+          <button type="button" class="btn-ghost" [class.active]="addingInstance()" (click)="toggleAddInstance()">
+            {{ addingInstance() ? 'Annuler' : '+ Instance' }}
+          </button>
+        </div>
+
+        @if (cadInstances().length > 0) {
+          <ul class="cad-list">
+            @for (inst of cadInstances(); track inst.id) {
+              <li>
+                <span>
+                  <strong>{{ inst.label }}</strong> ({{ subPartName(inst.source_project) }})
+                  @if (inst.placement) {
+                    — placé en ({{ inst.placement.position[0] | number:'1.1-1' }},
+                    {{ inst.placement.position[1] | number:'1.1-1' }},
+                    {{ inst.placement.position[2] | number:'1.1-1' }})
+                  } @else {
+                    — non résolu
+                  }
+                </span>
+                <button type="button" class="btn-ghost small" (click)="deleteInstance(inst.id)">Supprimer</button>
+              </li>
+            }
+          </ul>
+        } @else {
+          <p class="muted">Aucune instance pour l'instant.</p>
+        }
+
+        @if (addingInstance()) {
+          <div class="sub-form">
+            <label>
+              Sous-partie :
+              <select [(ngModel)]="newInstanceSourceProjectId">
+                <option [ngValue]="null" disabled>— choisir —</option>
+                @for (sp of subParts(); track sp.id) {
+                  <option [ngValue]="sp.id">{{ sp.name }}</option>
+                }
+              </select>
+            </label>
+            <label>Étiquette (optionnel) : <input type="text" [(ngModel)]="newInstanceLabel" /></label>
+            <button type="button" class="btn-primary" [disabled]="!newInstanceSourceProjectId" (click)="addInstance()">
+              Ajouter l'instance
+            </button>
+          </div>
+        }
+      </section>
+
+      <!-- ── Contraintes ──────────────────────────────────────────────────────── -->
+      <section class="card">
+        <div class="viewer-header">
+          <h3>Contraintes ({{ cadConstraints().length }})</h3>
+          <button type="button" class="btn-ghost" [class.active]="addingConstraint()" (click)="toggleAddConstraint()">
+            {{ addingConstraint() ? 'Annuler' : '+ Contrainte' }}
+          </button>
+        </div>
+
+        @if (cadConstraints().length > 0) {
+          <ul class="cad-list">
+            @for (c of cadConstraints(); track c.id) {
+              <li>
+                <span><strong>{{ constraintTypeLabels[c.constraint_type] }}</strong> — {{ constraintSummary(c) }}</span>
+                <button type="button" class="btn-ghost small" (click)="deleteConstraint(c.id)">Supprimer</button>
+              </li>
+            }
+          </ul>
+        } @else {
+          <p class="muted">Aucune contrainte pour l'instant — au moins une contrainte FIXED est requise avant résolution.</p>
+        }
+
+        @if (addingConstraint()) {
+          <div class="sub-form">
+            <p class="hint">
+              Référence de face/arête/sommet : index numérique (0 = premier) dans la topologie du STEP — V1 :
+              saisie numérique, pas de sélection au clic (même décision que GEAR_TEETH au Lot 5.1).
+            </p>
+            <label>
+              Type :
+              <select [(ngModel)]="newConstraint.type">
+                @for (t of constraintTypes; track t) {
+                  <option [value]="t">{{ constraintTypeLabels[t] }}</option>
+                }
+              </select>
+            </label>
+
+            <label>
+              Instance A :
+              <select [(ngModel)]="newConstraint.instanceAId">
+                <option [ngValue]="null" disabled>— choisir —</option>
+                @for (inst of cadInstances(); track inst.id) {
+                  <option [ngValue]="inst.id">{{ inst.label }}</option>
+                }
+              </select>
+            </label>
+            @if (newConstraint.type !== 'FIXED') {
+              <div class="field-row">
+                <label>
+                  Référence A :
+                  <select [(ngModel)]="newConstraint.refAKind">
+                    <option value="face">Face</option>
+                    <option value="edge">Arête</option>
+                    <option value="vertex">Sommet</option>
+                  </select>
+                </label>
+                <label>Index <input type="number" min="0" [(ngModel)]="newConstraint.refAIndex" /></label>
+              </div>
+            }
+
+            @if (constraintNeedsInstanceB) {
+              <label>
+                Instance B :
+                <select [(ngModel)]="newConstraint.instanceBId">
+                  <option [ngValue]="null" disabled>— choisir —</option>
+                  @for (inst of cadInstances(); track inst.id) {
+                    <option [ngValue]="inst.id">{{ inst.label }}</option>
+                  }
+                </select>
+              </label>
+              <div class="field-row">
+                <label>
+                  Référence B :
+                  <select [(ngModel)]="newConstraint.refBKind">
+                    <option value="face">Face</option>
+                    <option value="edge">Arête</option>
+                    <option value="vertex">Sommet</option>
+                  </select>
+                </label>
+                <label>Index <input type="number" min="0" [(ngModel)]="newConstraint.refBIndex" /></label>
+              </div>
+            }
+
+            @if (newConstraint.type === 'DISTANCE') {
+              <label>Distance (mm) <input type="number" [(ngModel)]="newConstraint.distanceMm" /></label>
+            }
+            @if (newConstraint.type === 'ANGLE') {
+              <label>Angle° <input type="number" [(ngModel)]="newConstraint.angleDeg" /></label>
+            }
+            @if (newConstraint.type === 'GEAR_MESH') {
+              <p class="hint">Les rayons primitifs sont dérivés automatiquement des opérations GEAR_TEETH de chaque sous-partie.</p>
+            }
+
+            <button
+              type="button" class="btn-primary"
+              [disabled]="!newConstraint.instanceAId || (constraintNeedsInstanceB && !newConstraint.instanceBId)"
+              (click)="addConstraint()"
+            >
+              Poser la contrainte
+            </button>
+          </div>
+        }
+      </section>
+
+      <!-- ── Résolution (Job CAD_ASSEMBLE) ───────────────────────────────────── -->
+      <section class="card">
+        <h3>Résolution (Job CAD_ASSEMBLE)</h3>
+
+        @if (activeAssembleJob(); as job) {
+          <div class="job-progress">
+            <div class="bar"><div class="fill" [style.width.%]="job.progress"></div></div>
+            <p class="job-message">{{ job.message || 'En cours…' }} ({{ job.progress }}%)</p>
+          </div>
+        } @else if (activeJob(); as job) {
+          <p class="hint">Un autre job lourd est en cours pour l'atelier — un seul à la fois, tous modules confondus.</p>
+        } @else {
+          <button type="button" class="btn-primary" [disabled]="assembling() || cadConstraints().length === 0" (click)="launchAssemble()">
+            {{ assembling() ? 'Lancement…' : "Lancer l'assemblage" }}
+          </button>
+        }
+
+        @if (lastFinishedAssembleJob(); as job) {
+          <p class="last-job" [class.error]="job.status === 'ERROR'">{{ job.message }}</p>
+        }
+      </section>
+    } @else {
+
+    <!-- ── Choix de la méthode d'initialisation du maillage ─────────────────── -->
+    <section class="card init-mode-picker">
+      <h3>Méthode d'initialisation du maillage</h3>
+      <p class="equivalence-note">
+        Deux méthodes strictement équivalentes pour obtenir le premier maillage de ce projet : à partir de
+        <strong>photos</strong> (reconstruction 3D) ou par <strong>conception CAO</strong> (sketchs + opérations).
+        Dans les deux cas, le résultat est un maillage utilisable ensuite exactement de la même façon
+        (Impression 3D, Mouvements, Bâtiments) — l'une peut remplacer l'autre.
+      </p>
+      <div class="mode-toggle">
+        <button type="button" class="btn-ghost" [class.active]="initMode() === 'photos'" (click)="setInitMode('photos')">
+          📷 Photos
+        </button>
+        <button type="button" class="btn-ghost" [class.active]="initMode() === 'cao'" (click)="setInitMode('cao')">
+          📐 Conception CAO
+        </button>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════ MÉTHODE : PHOTOS ══════════════════════════ -->
+    @if (initMode() === 'photos') {
+      <!-- ── Dépôt de photos / vidéo ────────────────────────────────────────── -->
+      <section class="card">
+        <h3>Photos</h3>
+        <div
+          class="dropzone"
+          [class.dragover]="dragOver()"
+          (dragover)="onDragOver($event)"
+          (dragleave)="onDragLeave()"
+          (drop)="onDrop($event)"
+        >
+          @if (uploading()) {
+            <p>Envoi en cours…</p>
+          } @else {
+            <p>Glisser-déposer des photos ou une vidéo ici</p>
+            <div class="dropzone-actions">
+              <label class="btn-ghost">
+                Choisir des photos…
+                <input type="file" accept="image/*" multiple (change)="onPhotoInputChange($event)" hidden />
+              </label>
+              <label class="btn-ghost">
+                Choisir une vidéo…
+                <input type="file" accept="video/*" (change)="onVideoInputChange($event)" hidden />
+              </label>
             </div>
           }
         </div>
-      }
-    </section>
 
-    <!-- ── Reconstruction ───────────────────────────────────────────────────── -->
-    <section class="card">
-      <h3>Reconstruction</h3>
-
-      @if (activeReconstructionJob(); as job) {
-        <div class="job-progress">
-          <div class="bar"><div class="fill" [style.width.%]="job.progress"></div></div>
-          <p class="job-message">{{ job.message || 'En cours…' }} ({{ job.progress }}%)</p>
-        </div>
-      } @else if (activeJob(); as job) {
-        <p class="hint">Un job de réparation est en cours pour l'atelier — un seul job lourd à la fois, tous modules confondus.</p>
-      } @else {
-        <div class="presets">
-          @for (p of presets; track p) {
-            <button
-              type="button"
-              class="preset-btn"
-              [class.active]="selectedPreset() === p"
-              (click)="selectPreset(p)"
-            >
-              {{ presetLabels[p] }}
-            </button>
-          }
-        </div>
-
-        @if (estimate(); as est) {
-          <p class="estimate">
-            Estimation : <strong>{{ formatDuration(est.estimated_seconds) }}</strong> pour {{ est.n_photos }} photos.
-            @if (est.warning_threshold_exceeded) {
-              <span class="warning-text"> ⚠ dépasse 2h, envisager un preset plus rapide.</span>
+        @if (project.photos.length > 0) {
+          <div class="photo-grid">
+            @for (photo of project.photos; track photo.id) {
+              <div class="thumb" [class.resolved]="photo.pose_resolved" [class.unresolved]="photo.camera_pose === null && lastFinishedJob()?.kind === 'RECONSTRUCTION'">
+                <img [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
+                <button type="button" class="thumb-remove" (click)="deletePhoto(photo.id)" title="Retirer">✕</button>
+              </div>
             }
-          </p>
+          </div>
+        }
+      </section>
+
+      <!-- ── Reconstruction ───────────────────────────────────────────────────── -->
+      <section class="card">
+        <h3>Reconstruction</h3>
+
+        @if (activeReconstructionJob(); as job) {
+          <div class="job-progress">
+            <div class="bar"><div class="fill" [style.width.%]="job.progress"></div></div>
+            <p class="job-message">{{ job.message || 'En cours…' }} ({{ job.progress }}%)</p>
+          </div>
+        } @else if (activeJob(); as job) {
+          <p class="hint">Un job lourd est en cours pour l'atelier — un seul à la fois, tous modules confondus.</p>
+        } @else {
+          <div class="presets">
+            @for (p of presets; track p) {
+              <button
+                type="button"
+                class="preset-btn"
+                [class.active]="selectedPreset() === p"
+                (click)="selectPreset(p)"
+              >
+                {{ presetLabels[p] }}
+              </button>
+            }
+          </div>
+
+          @if (estimate(); as est) {
+            <p class="estimate">
+              Estimation : <strong>{{ formatDuration(est.estimated_seconds) }}</strong> pour {{ est.n_photos }} photos.
+              @if (est.warning_threshold_exceeded) {
+                <span class="warning-text"> ⚠ dépasse 2h, envisager un preset plus rapide.</span>
+              }
+            </p>
+          }
+
+          <button
+            type="button"
+            class="btn-primary"
+            [disabled]="launching() || project.photo_count < 3"
+            (click)="launchReconstruction()"
+          >
+            {{ launching() ? 'Lancement…' : 'Lancer la reconstruction' }}
+          </button>
+          @if (project.photo_count < 3) {
+            <p class="hint">Au moins 3 photos sont nécessaires.</p>
+          }
         }
 
-        <button
-          type="button"
-          class="btn-primary"
-          [disabled]="launching() || project.photo_count < 3"
-          (click)="launchReconstruction()"
-        >
-          {{ launching() ? 'Lancement…' : 'Lancer la reconstruction' }}
-        </button>
-        @if (project.photo_count < 3) {
-          <p class="hint">Au moins 3 photos sont nécessaires.</p>
+        @if (lastFinishedJob(); as job) {
+          @if (job.kind === 'RECONSTRUCTION') {
+            <p class="last-job" [class.error]="job.status === 'ERROR'">{{ job.message }}</p>
+          }
         }
-      }
+      </section>
+    }
 
-      @if (lastFinishedJob(); as job) {
-        <p class="last-job" [class.error]="job.status === 'ERROR'">{{ job.message }}</p>
-      }
-    </section>
+    <!-- ══════════════════════════ MÉTHODE : CONCEPTION CAO ═══════════════════ -->
+    @if (initMode() === 'cao') {
+      <!-- ── Sketchs ─────────────────────────────────────────────────────── -->
+      <section class="card">
+        <div class="viewer-header">
+          <h3>Sketchs ({{ sketches().length }})</h3>
+          <button type="button" class="btn-ghost" [class.active]="addingSketch()" (click)="toggleAddSketch()">
+            {{ addingSketch() ? 'Annuler' : '+ Sketch' }}
+          </button>
+        </div>
 
-    <!-- ── Aperçu du maillage ────────────────────────────────────────────────── -->
+        @if (sketches().length > 0) {
+          <ul class="cad-list">
+            @for (s of sketches(); track s.id) {
+              <li>
+                <span><strong>#{{ s.id }}</strong> {{ s.name }} — plan {{ s.plane }} — {{ s.entities.length }} entité(s)</span>
+                <button type="button" class="btn-ghost small" (click)="deleteSketch(s.id)">Supprimer</button>
+              </li>
+            }
+          </ul>
+        }
+
+        @if (addingSketch()) {
+          <div class="sub-form">
+            <label>Nom : <input type="text" [(ngModel)]="newSketchName" /></label>
+            <label>
+              Plan de référence :
+              <select [(ngModel)]="newSketchPlane">
+                <option value="XY">XY</option>
+                <option value="XZ">XZ</option>
+                <option value="YZ">YZ</option>
+              </select>
+            </label>
+
+            <h4>Entités</h4>
+            @if (newSketchEntities.length > 0) {
+              <ul class="cad-list">
+                @for (e of newSketchEntities; track $index) {
+                  <li>
+                    <span>{{ entitySummary(e) }}</span>
+                    <button type="button" class="btn-ghost small" (click)="removeEntity($index)">Retirer</button>
+                  </li>
+                }
+              </ul>
+            }
+
+            <label>
+              Type d'entité :
+              <select [(ngModel)]="newEntityType">
+                <option value="segment">Segment</option>
+                <option value="circle">Cercle</option>
+                <option value="arc">Arc (3 points)</option>
+                <option value="polyline">Polyligne</option>
+                <option value="bspline">Courbe B-spline (+ épaisseur)</option>
+              </select>
+            </label>
+
+            @if (newEntityType === 'segment') {
+              <div class="field-row">
+                <label>Début X <input type="number" [(ngModel)]="entityField.startX" /></label>
+                <label>Début Y <input type="number" [(ngModel)]="entityField.startY" /></label>
+                <label>Fin X <input type="number" [(ngModel)]="entityField.endX" /></label>
+                <label>Fin Y <input type="number" [(ngModel)]="entityField.endY" /></label>
+              </div>
+            } @else if (newEntityType === 'circle') {
+              <div class="field-row">
+                <label>Centre X <input type="number" [(ngModel)]="entityField.centerX" /></label>
+                <label>Centre Y <input type="number" [(ngModel)]="entityField.centerY" /></label>
+                <label>Rayon <input type="number" min="0" [(ngModel)]="entityField.radius" /></label>
+              </div>
+            } @else if (newEntityType === 'arc') {
+              <div class="field-row">
+                <label>Début X <input type="number" [(ngModel)]="entityField.startX" /></label>
+                <label>Début Y <input type="number" [(ngModel)]="entityField.startY" /></label>
+                <label>Milieu X <input type="number" [(ngModel)]="entityField.midX" /></label>
+                <label>Milieu Y <input type="number" [(ngModel)]="entityField.midY" /></label>
+                <label>Fin X <input type="number" [(ngModel)]="entityField.endX" /></label>
+                <label>Fin Y <input type="number" [(ngModel)]="entityField.endY" /></label>
+              </div>
+            } @else if (newEntityType === 'polyline') {
+              <label>
+                Points (un "x,y" par ligne) :
+                <textarea rows="4" [(ngModel)]="entityField.pointsText" placeholder="0,0&#10;20,0&#10;20,10"></textarea>
+              </label>
+              <label class="checkbox"><input type="checkbox" [(ngModel)]="entityField.closed" /> Fermée</label>
+            } @else if (newEntityType === 'bspline') {
+              <label>
+                Points (un "x,y" par ligne) :
+                <textarea rows="4" [(ngModel)]="entityField.pointsText" placeholder="0,0&#10;10,5&#10;20,0"></textarea>
+              </label>
+              <label>Épaisseur <input type="number" min="0" step="0.1" [(ngModel)]="entityField.thickness" /></label>
+            }
+
+            <button type="button" class="btn-ghost" (click)="addEntity()">Ajouter l'entité</button>
+
+            <button
+              type="button" class="btn-primary"
+              [disabled]="!newSketchName.trim() || newSketchEntities.length === 0"
+              (click)="saveSketch()"
+            >
+              Enregistrer le sketch
+            </button>
+          </div>
+        }
+      </section>
+
+      <!-- ── Historique d'opérations ────────────────────────────────────────── -->
+      <section class="card">
+        <div class="viewer-header">
+          <h3>Historique d'opérations ({{ operations().length }})</h3>
+          <button type="button" class="btn-ghost" [class.active]="addingOperation()" (click)="toggleAddOperation()">
+            {{ addingOperation() ? 'Annuler' : '+ Opération' }}
+          </button>
+        </div>
+
+        @if (operations().length > 0) {
+          <ul class="cad-list">
+            @for (o of operations(); track o.id) {
+              <li>
+                <span><strong>#{{ o.order }}</strong> ({{ o.id }}) {{ operationLabels[o.operation_type] }} — {{ operationSummary(o) }}</span>
+                <button type="button" class="btn-ghost small" (click)="deleteOperation(o.id)">Supprimer</button>
+              </li>
+            }
+          </ul>
+        } @else {
+          <p class="muted">Aucune opération pour l'instant.</p>
+        }
+
+        @if (addingOperation()) {
+          <div class="sub-form">
+            <label>
+              Type d'opération :
+              <select [(ngModel)]="newOperationType">
+                @for (t of cadOperationTypes; track t) {
+                  <option [value]="t">{{ operationLabels[t] }}</option>
+                }
+              </select>
+            </label>
+
+            @if (newOperationType === 'PRIMITIVE_BOX') {
+              <div class="field-row">
+                <label>Longueur <input type="number" min="0" [(ngModel)]="op.length" /></label>
+                <label>Largeur <input type="number" min="0" [(ngModel)]="op.width" /></label>
+                <label>Hauteur <input type="number" min="0" [(ngModel)]="op.height" /></label>
+              </div>
+            } @else if (newOperationType === 'PRIMITIVE_SPHERE') {
+              <div class="field-row">
+                <label>Rayon <input type="number" min="0" [(ngModel)]="op.radius" /></label>
+              </div>
+            } @else if (newOperationType === 'PRIMITIVE_CYLINDER') {
+              <div class="field-row">
+                <label>Rayon <input type="number" min="0" [(ngModel)]="op.radius" /></label>
+                <label>Hauteur <input type="number" min="0" [(ngModel)]="op.height" /></label>
+              </div>
+            } @else if (newOperationType === 'PRIMITIVE_CONE') {
+              <div class="field-row">
+                <label>Rayon bas <input type="number" min="0" [(ngModel)]="op.bottomRadius" /></label>
+                <label>Rayon haut <input type="number" min="0" [(ngModel)]="op.topRadius" /></label>
+                <label>Hauteur <input type="number" min="0" [(ngModel)]="op.height" /></label>
+              </div>
+            } @else if (newOperationType === 'PRIMITIVE_TORUS') {
+              <div class="field-row">
+                <label>Rayon majeur <input type="number" min="0" [(ngModel)]="op.majorRadius" /></label>
+                <label>Rayon mineur <input type="number" min="0" [(ngModel)]="op.minorRadius" /></label>
+              </div>
+            }
+
+            @if (isPrimitive) {
+              <label class="checkbox"><input type="checkbox" [(ngModel)]="op.usePlacement" /> Placement (sinon origine)</label>
+              @if (op.usePlacement) {
+                <div class="field-row">
+                  <label>Pos X <input type="number" [(ngModel)]="op.posX" /></label>
+                  <label>Pos Y <input type="number" [(ngModel)]="op.posY" /></label>
+                  <label>Pos Z <input type="number" [(ngModel)]="op.posZ" /></label>
+                </div>
+                <div class="field-row">
+                  <label>Rot X° <input type="number" [(ngModel)]="op.rotX" /></label>
+                  <label>Rot Y° <input type="number" [(ngModel)]="op.rotY" /></label>
+                  <label>Rot Z° <input type="number" [(ngModel)]="op.rotZ" /></label>
+                </div>
+              }
+            }
+
+            @if (newOperationType === 'EXTRUDE' || newOperationType === 'REVOLVE' || newOperationType === 'SURFACE_FROM_WIRE') {
+              <label>
+                Sketch :
+                <select [(ngModel)]="op.sketchId">
+                  <option [ngValue]="null" disabled>— choisir —</option>
+                  @for (s of sketches(); track s.id) {
+                    <option [ngValue]="s.id">#{{ s.id }} {{ s.name }}</option>
+                  }
+                </select>
+              </label>
+            }
+
+            @if (newOperationType === 'EXTRUDE' || newOperationType === 'REVOLVE') {
+              <label>
+                Mode :
+                <select [(ngModel)]="op.mode">
+                  <option value="ADD">Ajouter</option>
+                  <option value="CUT">Soustraire</option>
+                  <option value="INTERSECT">Intersection</option>
+                </select>
+              </label>
+              <label class="checkbox">
+                <input type="checkbox" [(ngModel)]="op.useTarget" /> Combiner avec une opération existante
+              </label>
+              @if (op.useTarget) {
+                <p class="hint">
+                  La cible doit être du même type que le résultat de cette extrusion/révolution (un solide) —
+                  ne pas choisir une opération "Surface depuis un contour" (SURFACE_FROM_WIRE), qui produit une
+                  surface et ne peut pas se combiner avec un solide.
+                </p>
+                <label>
+                  Opération cible :
+                  <select [(ngModel)]="op.targetId">
+                    <option [ngValue]="null" disabled>— choisir —</option>
+                    @for (o2 of operations(); track o2.id) {
+                      @if (o2.operation_type !== 'SURFACE_FROM_WIRE') {
+                        <option [ngValue]="o2.id">#{{ o2.order }} {{ operationLabels[o2.operation_type] }}</option>
+                      }
+                    }
+                  </select>
+                </label>
+              }
+            }
+
+            @if (newOperationType === 'EXTRUDE') {
+              <div class="field-row">
+                <label>Distance <input type="number" [(ngModel)]="op.amount" /></label>
+              </div>
+              <label class="checkbox"><input type="checkbox" [(ngModel)]="op.both" /> Extruder dans les deux sens</label>
+            }
+
+            @if (newOperationType === 'REVOLVE') {
+              <div class="field-row">
+                <label>Angle° <input type="number" min="0" max="360" [(ngModel)]="op.angleDeg" /></label>
+              </div>
+              <div class="field-row">
+                <label>Axe origine X <input type="number" [(ngModel)]="op.axisOriginX" /></label>
+                <label>Y <input type="number" [(ngModel)]="op.axisOriginY" /></label>
+                <label>Z <input type="number" [(ngModel)]="op.axisOriginZ" /></label>
+              </div>
+              <div class="field-row">
+                <label>Axe direction X <input type="number" [(ngModel)]="op.axisDirX" /></label>
+                <label>Y <input type="number" [(ngModel)]="op.axisDirY" /></label>
+                <label>Z <input type="number" [(ngModel)]="op.axisDirZ" /></label>
+              </div>
+            }
+
+            @if (newOperationType === 'BOOLEAN_UNION' || newOperationType === 'BOOLEAN_CUT' || newOperationType === 'BOOLEAN_INTERSECT') {
+              <p class="hint">Les deux opérations combinées doivent être du même type (deux solides, ou deux surfaces).</p>
+              <label>
+                Opération A :
+                <select [(ngModel)]="op.sourceAId">
+                  <option [ngValue]="null" disabled>— choisir —</option>
+                  @for (o2 of operations(); track o2.id) {
+                    <option [ngValue]="o2.id">#{{ o2.order }} {{ operationLabels[o2.operation_type] }}</option>
+                  }
+                </select>
+              </label>
+              <label>
+                Opération B :
+                <select [(ngModel)]="op.sourceBId">
+                  <option [ngValue]="null" disabled>— choisir —</option>
+                  @for (o2 of operations(); track o2.id) {
+                    <option [ngValue]="o2.id">#{{ o2.order }} {{ operationLabels[o2.operation_type] }}</option>
+                  }
+                </select>
+              </label>
+            }
+
+            @if (newOperationType === 'PATTERN_CIRCULAR' || newOperationType === 'PATTERN_LINEAR' || newOperationType === 'GEAR_TEETH') {
+              <label>
+                Opération source :
+                <select [(ngModel)]="op.sourceId">
+                  <option [ngValue]="null" disabled>— choisir —</option>
+                  @for (o2 of operations(); track o2.id) {
+                    <option [ngValue]="o2.id">#{{ o2.order }} {{ operationLabels[o2.operation_type] }}</option>
+                  }
+                </select>
+              </label>
+            }
+
+            @if (newOperationType === 'PATTERN_CIRCULAR') {
+              <div class="field-row">
+                <label>Nombre <input type="number" min="1" [(ngModel)]="op.count" /></label>
+                <label>Rayon <input type="number" [(ngModel)]="op.patRadius" /></label>
+                <label>Angle départ° <input type="number" [(ngModel)]="op.startAngleDeg" /></label>
+              </div>
+              <div class="field-row">
+                <label>Centre X <input type="number" [(ngModel)]="op.centerX" /></label>
+                <label>Y <input type="number" [(ngModel)]="op.centerY" /></label>
+                <label>Z <input type="number" [(ngModel)]="op.centerZ" /></label>
+              </div>
+              <div class="field-row">
+                <label>Axe X <input type="number" [(ngModel)]="op.patAxisDirX" /></label>
+                <label>Y <input type="number" [(ngModel)]="op.patAxisDirY" /></label>
+                <label>Z <input type="number" [(ngModel)]="op.patAxisDirZ" /></label>
+              </div>
+            }
+
+            @if (newOperationType === 'PATTERN_LINEAR') {
+              <div class="field-row">
+                <label>Nombre <input type="number" min="1" [(ngModel)]="op.count" /></label>
+                <label>Pas X <input type="number" [(ngModel)]="op.stepX" /></label>
+                <label>Pas Y <input type="number" [(ngModel)]="op.stepY" /></label>
+                <label>Pas Z <input type="number" [(ngModel)]="op.stepZ" /></label>
+              </div>
+            }
+
+            @if (newOperationType === 'GEAR_TEETH') {
+              <p class="hint">
+                Index de face cylindrique/conique (voir l'aperçu du maillage ci-dessous — V1 : saisie numérique,
+                pas de sélection au clic, cf. décision actée).
+              </p>
+              <div class="field-row">
+                <label>Index de face <input type="number" min="0" [(ngModel)]="op.faceIndex" /></label>
+                <label>Module <input type="number" min="0" step="0.1" [(ngModel)]="op.module" /></label>
+                <label>Nb dents <input type="number" min="3" [(ngModel)]="op.teethNumber" /></label>
+              </div>
+              <div class="field-row">
+                <label>Angle pression° <input type="number" [(ngModel)]="op.pressureAngle" /></label>
+                <label>Largeur <input type="number" min="0" [(ngModel)]="op.gearWidth" /></label>
+              </div>
+              <label class="checkbox"><input type="checkbox" [(ngModel)]="op.internal" /> Denture interne (couronne)</label>
+            }
+
+            <button type="button" class="btn-primary" (click)="addOperation()">Ajouter l'opération</button>
+          </div>
+        }
+      </section>
+
+      <!-- ── Construction ────────────────────────────────────────────────────── -->
+      <section class="card">
+        <h3>Construction (Job CAD_BUILD)</h3>
+
+        @if (activeCadBuildJob(); as job) {
+          <div class="job-progress">
+            <div class="bar"><div class="fill" [style.width.%]="job.progress"></div></div>
+            <p class="job-message">{{ job.message || 'En cours…' }} ({{ job.progress }}%)</p>
+          </div>
+        } @else if (activeJob(); as job) {
+          <p class="hint">Un autre job lourd est en cours pour l'atelier — un seul à la fois, tous modules confondus.</p>
+        } @else {
+          <div class="field-row">
+            <label>Déflection linéaire <input type="number" min="0.001" step="0.01" [ngModel]="buildDeflectionLinear()" (ngModelChange)="buildDeflectionLinear.set($event)" /></label>
+            <label>Déflection angulaire <input type="number" min="0.01" step="0.05" [ngModel]="buildDeflectionAngular()" (ngModelChange)="buildDeflectionAngular.set($event)" /></label>
+          </div>
+          <button type="button" class="btn-primary" [disabled]="building() || operations().length === 0" (click)="launchBuild()">
+            {{ building() ? 'Lancement…' : 'Construire' }}
+          </button>
+        }
+
+        @if (lastFinishedCadBuildJob(); as job) {
+          <p class="last-job" [class.error]="job.status === 'ERROR'">{{ job.message }}</p>
+        }
+      </section>
+    }
+
+    } <!-- fin @else (projet non-assemblage) -->
+
+    <!-- ── Aperçu du maillage (commun à toutes les méthodes, y compris assemblage) ── -->
     @if (meshViewerUrl(); as url) {
       <section class="card">
         <div class="viewer-header">
           <h3>Maillage (v{{ latestMesh()?.version }})</h3>
           <a class="btn-primary" [routerLink]="['/impression', project.id]">Aller à l'impression 3D →</a>
         </div>
+        @if (latestMesh(); as mesh) {
+          <div class="badges">
+            <span class="badge" [class.success]="mesh.is_watertight" [class.warning]="!mesh.is_watertight">
+              {{ mesh.is_watertight ? 'Watertight' : 'Non watertight' }}
+            </span>
+            @if (mesh.step_file) {
+              <a class="badge" [href]="mediaUrl(mesh.step_file)" target="_blank" rel="noopener">Télécharger le STEP</a>
+            }
+          </div>
+        }
 
         <app-mesh-viewer [meshUrl]="url"></app-mesh-viewer>
       </section>

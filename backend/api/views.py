@@ -2,19 +2,17 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from django.conf import settings
 from django.db import transaction
 from django.db.models import Max
-from django.http import HttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.text import get_valid_filename
-from django.views.static import serve as django_static_serve
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import generics, status
 from rest_framework.response import Response
 
-from . import facade, reconstruction, repair, segmentation, video_import
+from . import facade, reconstruction, repair, segmentation, storage_backend, storage_client, video_import
 from .models import (
     Department, UserRecord, Project, Photo, Job, Mesh, Part, Joint, PhotoLabel, SemanticClass,
     CadSketch, CadOperation, CadAssemblyInstance, CadAssemblyConstraint,
@@ -311,7 +309,8 @@ class MeshAutoOrientView(APIView):
     def get(self, request, pk):
         mesh = get_object_or_404(Mesh, pk=pk)
         try:
-            suggestion = repair.suggest_print_orientation(Path(mesh.file.path))
+            with storage_backend.local_copy(mesh.file) as mesh_path:
+                suggestion = repair.suggest_print_orientation(mesh_path)
         except (repair.RepairError, FileNotFoundError):
             return Response({'detail': "Fichier de maillage introuvable."}, status=status.HTTP_404_NOT_FOUND)
         return Response(suggestion)
@@ -357,9 +356,10 @@ class MeshExportView(APIView):
             return Response({'detail': "Quaternion d'orientation invalide."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            data = repair.export_print_file(
-                Path(mesh.file.path), quaternion, project.scale_meters_per_unit, file_format,
-            )
+            with storage_backend.local_copy(mesh.file) as mesh_path:
+                data = repair.export_print_file(
+                    mesh_path, quaternion, project.scale_meters_per_unit, file_format,
+                )
         except (repair.RepairError, FileNotFoundError):
             return Response({'detail': "Fichier de maillage introuvable."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -377,7 +377,8 @@ class MeshExportView(APIView):
 # ──────────────────────────────────────────────────────────────────────────────
 def _fit_and_set_primitive(part: Part) -> None:
     try:
-        fit = segmentation.fit_primitive_to_faces(Path(part.mesh.file.path), part.face_ids)
+        with storage_backend.local_copy(part.mesh.file) as mesh_path:
+            fit = segmentation.fit_primitive_to_faces(mesh_path, part.face_ids)
     except segmentation.SegmentationError:
         fit = None
     if fit:
@@ -429,7 +430,8 @@ class PartSuggestView(APIView):
     def post(self, request, mesh_id):
         mesh = get_object_or_404(Mesh, pk=mesh_id)
         try:
-            suggestions = segmentation.suggest_parts(Path(mesh.file.path))
+            with storage_backend.local_copy(mesh.file) as mesh_path:
+                suggestions = segmentation.suggest_parts(mesh_path)
         except (segmentation.SegmentationError, FileNotFoundError):
             return Response({'detail': "Fichier de maillage introuvable."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -573,9 +575,10 @@ class SuggestJointAxisView(APIView):
         part = get_object_or_404(Part, pk=pk)
         other = get_object_or_404(Part, pk=request.query_params.get('other'), mesh=part.mesh)
         try:
-            suggestion = segmentation.suggest_joint_axis(
-                Path(part.mesh.file.path), part.face_ids, other.face_ids,
-            )
+            with storage_backend.local_copy(part.mesh.file) as mesh_path:
+                suggestion = segmentation.suggest_joint_axis(
+                    mesh_path, part.face_ids, other.face_ids,
+                )
         except (segmentation.SegmentationError, FileNotFoundError):
             return Response({'detail': "Fichier de maillage introuvable."}, status=status.HTTP_404_NOT_FOUND)
         return Response({'suggestion': suggestion})
@@ -608,13 +611,25 @@ class MediaView(APIView):
     """
     GET /media/<path> — photos et maillages, derrière la même authentification
     que le reste de l'API (IsAuthenticated + KeycloakJWTAuthentication, y compris
-    le contrôle de groupe). Sans cette vue, ces fichiers étaient servis en clair
-    par django.views.static.serve, accessibles sans connexion à quiconque devine
-    l'URL — contraire au principe du lab (cf. CLAUDE.md, cloisonnement).
+    le contrôle de groupe). Proxie l'API storage (cf. api/storage_backend.py) :
+    le fichier n'est jamais exposé directement, storage n'a aucun chemin de
+    lecture anonyme. Avant la migration, ces fichiers étaient déjà réservés à
+    l'authentification (contrairement à conciergerie/carto-lab avant leur
+    migration) — cette vue préserve exactement ce même cloisonnement.
     """
 
     def get(self, request, path):
-        return django_static_serve(request._request, path, document_root=settings.MEDIA_ROOT)
+        try:
+            upstream = storage_client.download(path)
+        except FileNotFoundError:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        except storage_client.StorageClientError as exc:
+            return Response({'detail': f'Stockage indisponible : {exc}'},
+                            status=status.HTTP_502_BAD_GATEWAY)
+        return StreamingHttpResponse(
+            upstream.iter_content(chunk_size=65536),
+            content_type=upstream.headers.get('Content-Type', 'application/octet-stream'),
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

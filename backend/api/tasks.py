@@ -22,7 +22,6 @@ from pathlib import Path
 import numpy as np
 import trimesh
 from celery import shared_task
-from django.conf import settings
 from django.core.files import File
 from django.db.models import Max
 from PIL import Image, ImageOps
@@ -30,6 +29,7 @@ from PIL import Image, ImageOps
 import build123d as bd
 
 from . import cad_assemble as cad_assemble_module
+from . import storage_backend
 from . import cad_build as cad_build_module
 from . import facade as facade_module
 from . import repair as repair_module
@@ -49,7 +49,14 @@ def _run(cmd: list) -> None:
         )
 
 
-def _copy_resized(src: Path, dst: Path, max_size: int) -> None:
+def _copy_resized(src, dst: Path, max_size: int) -> None:
+    """Écrit dans `dst` une version redimensionnée de `src`.
+
+    `src` est un objet fichier ouvert, plus un chemin : les photos sont lues
+    depuis storage (cf. api/storage_backend.py), il n'existe plus de chemin
+    local d'où les lire. `dst`, en revanche, reste local — c'est le répertoire
+    de travail du job, que COLMAP va parcourir.
+    """
     img = Image.open(src)
     img = ImageOps.exif_transpose(img)
     if max(img.size) > max_size:
@@ -183,7 +190,7 @@ def run_reconstruction(self, job_id: int):
 
     project = job.project
     preset = PRESETS.get(job.params.get('preset'), PRESETS[DEFAULT_PRESET])
-    workdir = Path(settings.MEDIA_ROOT) / 'projects' / str(project.id) / f'work_{job.id}'
+    workdir = storage_backend.scratch_dir('projects', str(project.id), f'work_{job.id}')
     images_dir = workdir / 'images'
     dense_dir = workdir / 'dense'
 
@@ -197,8 +204,9 @@ def run_reconstruction(self, job_id: int):
                 "Au moins 3 photos sont nécessaires pour lancer une reconstruction."
             )
         for photo in photos:
-            _copy_resized(Path(photo.file.path), images_dir / Path(photo.file.name).name,
-                          preset['max_image_size'])
+            with photo.file.open('rb') as source:
+                _copy_resized(source, images_dir / Path(photo.file.name).name,
+                              preset['max_image_size'])
 
         db_path = workdir / 'db.db'
         job.set_state(progress=5, message="Extraction des points d'intérêt (SIFT)…")
@@ -292,12 +300,13 @@ def run_repair(self, job_id: int):
                 "Aucun maillage à réparer pour ce projet — lancez d'abord une reconstruction."
             )
 
-        workdir = Path(settings.MEDIA_ROOT) / 'projects' / str(project.id) / f'work_{job.id}'
+        workdir = storage_backend.scratch_dir('projects', str(project.id), f'work_{job.id}')
         output_ply = workdir / 'repaired.ply'
 
         job.set_state(progress=15, message="Réparation watertight (fermeture des trous, non-manifold)…")
         target_faces = job.params.get('target_faces')
-        report = repair_module.repair_mesh(Path(source.file.path), output_ply, target_faces)
+        with storage_backend.local_copy(source.file) as source_local:
+            report = repair_module.repair_mesh(source_local, output_ply, target_faces)
 
         job.set_state(progress=80, message="Export du résultat…")
         version = (project.meshes.aggregate(v=Max('version'))['v'] or 0) + 1
@@ -384,7 +393,8 @@ def run_facade_segmentation(self, job_id: int):
             )
 
         job.set_state(progress=4, message="Chargement du maillage source…")
-        geom = trimesh.load(str(source.file.path), process=False)
+        with storage_backend.local_copy(source.file) as source_local:
+            geom = trimesh.load(str(source_local), process=False)
 
         def progress_cb(i, n, photo):
             job.set_state(
@@ -401,7 +411,7 @@ def run_facade_segmentation(self, job_id: int):
         class_id = facade_module.regularize_openings(vertices, geom.faces, class_id, class_names, walls)
 
         job.set_state(progress=90, message="Export du résultat…")
-        workdir = Path(settings.MEDIA_ROOT) / 'projects' / str(project.id) / f'work_{job.id}'
+        workdir = storage_backend.scratch_dir('projects', str(project.id), f'work_{job.id}')
         workdir.mkdir(parents=True, exist_ok=True)
 
         version = (project.meshes.aggregate(v=Max('version'))['v'] or 0) + 1
@@ -482,7 +492,7 @@ def run_cad_build(self, job_id: int):
         shape = cad_build_module.evaluate_operations(operations, sketches_by_id)
 
         job.set_state(progress=50, message="Export STEP…")
-        workdir = Path(settings.MEDIA_ROOT) / 'projects' / str(project.id) / f'work_{job.id}'
+        workdir = storage_backend.scratch_dir('projects', str(project.id), f'work_{job.id}')
         workdir.mkdir(parents=True, exist_ok=True)
         version = (project.meshes.aggregate(v=Max('version'))['v'] or 0) + 1
         mesh = Mesh(project=project, job=job, version=version)
@@ -566,7 +576,7 @@ def run_cad_assemble(self, job_id: int):
     project = job.project
     start = time.monotonic()
     try:
-        workdir = Path(settings.MEDIA_ROOT) / 'projects' / str(project.id) / f'work_{job.id}'
+        workdir = storage_backend.scratch_dir('projects', str(project.id), f'work_{job.id}')
         workdir.mkdir(parents=True, exist_ok=True)
 
         job.set_state(status=Job.RUNNING, progress=10, message="Résolution de l'assemblage (FreeCAD)…")
@@ -615,7 +625,8 @@ def run_cad_assemble(self, job_id: int):
         try:
             scene = trimesh.Scene()
             for instance in project.cad_instances.select_related('source_mesh').all():
-                inst_shape = bd.import_step(instance.source_mesh.step_file.path)
+                with storage_backend.local_copy(instance.source_mesh.step_file) as step_local:
+                    inst_shape = bd.import_step(str(step_local))
                 inst_vertices, inst_triangles = inst_shape.tessellate(linear_deflection, angular_deflection)
                 inst_vertices_np = [(v.X, v.Y, v.Z) for v in inst_vertices]
                 inst_geom = trimesh.Trimesh(vertices=inst_vertices_np, faces=inst_triangles, process=False)

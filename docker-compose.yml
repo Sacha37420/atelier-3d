@@ -15,11 +15,14 @@ networks:
     driver: bridge
 
 volumes:
-  # Photos sources, nuages de points intermédiaires et maillages (plusieurs Go
-  # par projet) — déclaré 'external' pour survivre à clean2.sh (down --volumes).
-  atelier3d-media:
-    external: true
-    name: atelier-3d_atelier3d-media
+  # Répertoire de travail des jobs (bases COLMAP, nuages de points denses,
+  # images redimensionnées) — plusieurs Go par job, mais purement transitoire.
+  # NON 'external' à dessein (même raisonnement que `downloads` de robot-lab,
+  # cf. CLAUDE.md) : clean2.sh peut le vider sans rien perdre, ces fichiers
+  # n'ont aucune valeur une fois le job terminé. Les photos/maillages durables
+  # vivent désormais dans l'app storage (cf. backend/api/storage_backend.py) —
+  # ce n'est plus un volume média privé.
+  atelier3d-scratch:
 
 services:
 
@@ -50,7 +53,7 @@ services:
       - dev-net
       - atelier3d-net
     volumes:
-      - atelier3d-media:/app/media
+      - atelier3d-scratch:/app/scratch
     labels:
       caddy: "${DOMAIN}"
       caddy.handle_path: "/atelier-3d-api/*"
@@ -70,10 +73,12 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - dev-net   # pour atteindre l'instance Postgres partagée
+      - sso-net   # pour obtenir un token du compte de service (keycloak:8080) —
+                  # storage-backend, lui, est déjà atteignable via dev-net ci-dessous
+      - dev-net   # pour atteindre l'instance Postgres partagée et storage-backend
       - atelier3d-net
     volumes:
-      - atelier3d-media:/app/media
+      - atelier3d-scratch:/app/scratch
 
   frontend:
     build: ./frontend

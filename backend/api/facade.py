@@ -133,7 +133,7 @@ def _region_color(index: int) -> tuple:
     return int(r * 255), int(g * 255), int(b * 255)
 
 
-def _compute_regions(image_path: Path) -> np.ndarray:
+def _compute_regions(image_file) -> np.ndarray:
     """
     Segmentation zero-shot par région d'une image (FastSAM, mode "segment
     everything"). Les masques proposés se chevauchent souvent — chaque pixel
@@ -141,6 +141,10 @@ def _compute_regions(image_path: Path) -> np.ndarray:
     du plus petit au plus grand, sans écraser un pixel déjà pris), pour un
     découpage cohérent en régions disjointes plutôt qu'un empilement arbitraire.
     Retourne un tableau (H, W) int32, -1 = aucune région (fond/arrière-plan).
+
+    `image_file` est un objet fichier ouvert (photo.file.open('rb')), pas un
+    chemin : les photos sont lues depuis storage (cf. api/storage_backend.py),
+    PIL les accepte directement sans passer par un fichier temporaire local.
 
     Image chargée via PIL + `ImageOps.exif_transpose` (pas le chemin brut passé
     tel quel au modèle) pour matcher exactement `tasks._copy_resized()`, qui
@@ -152,7 +156,7 @@ def _compute_regions(image_path: Path) -> np.ndarray:
     """
     from PIL import ImageOps
 
-    img = ImageOps.exif_transpose(Image.open(image_path)).convert('RGB')
+    img = ImageOps.exif_transpose(Image.open(image_file)).convert('RGB')
     model = _get_fastsam_model()
     results = model(
         img, device='cpu', retina_masks=True,
@@ -180,10 +184,12 @@ def ensure_photo_regions(photo) -> np.ndarray:
     au moment de l'upload (cf. to_do_3D.md : aucun job auto au dépôt), appelé
     à la demande par la labellisation assistée ou par le job SEGMENTATION_FACADE.
     """
-    if photo.region_map and Path(photo.region_map.path).exists():
-        return np.load(photo.region_map.path)['region_ids']
+    if photo.region_map and photo.region_map.storage.exists(photo.region_map.name):
+        with photo.region_map.open('rb') as fh:
+            return np.load(fh)['region_ids']
 
-    region_ids = _compute_regions(Path(photo.file.path))
+    with photo.file.open('rb') as fh:
+        region_ids = _compute_regions(fh)
     n_regions = int(region_ids.max()) + 1 if region_ids.size and region_ids.max() >= 0 else 0
 
     from django.core.files.base import ContentFile

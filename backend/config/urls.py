@@ -36,9 +36,10 @@ urlpatterns = [
     path('api/', include('api.urls')),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', CustomSwaggerUIView.as_view(), name='swagger-ui'),
-    # Photos et maillages (volume externe monté sur MEDIA_ROOT) — chemin relatif
-    # 'media/' : derrière Caddy (handle_path), le PATH_INFO côté Django commence
-    # déjà par 'media/'. Authentifié (MediaView, cf. api/views.py) : pas de
-    # static_serve nu, sinon accessible sans connexion à quiconque devine l'URL.
+    # Photos et maillages (proxiés depuis l'app storage, cf. api/storage_backend.py)
+    # — chemin relatif 'media/' : derrière Caddy (handle_path), le PATH_INFO côté
+    # Django commence déjà par 'media/'. Authentifié (MediaView, cf. api/views.py) :
+    # storage n'a aucun chemin de lecture anonyme, le fichier n'est jamais exposé
+    # directement.
     path('media/<path:path>', MediaView.as_view()),
 ]

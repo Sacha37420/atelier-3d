@@ -6,6 +6,9 @@ psycopg2-binary>=2.9
 PyJWT>=2.8
 cryptography>=40.0
 django-cors-headers>=3.14.0
+# Appels à l'API de l'app storage (dépôt/lecture des fichiers) et au token
+# endpoint Keycloak du compte de service — cf. api/storage_client.py.
+requests>=2.31
 
 # ── File de tâches asynchrones (reconstruction 3D, calculs longs) ──────────────
 celery>=5.3

@@ -37,6 +37,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from . import storage_backend
+
 
 class CadAssembleError(Exception):
     """Erreur métier (contrainte incomplète, référence cassée, solveur en
@@ -63,7 +65,7 @@ def _gear_pitch_radius(source_project) -> float:
     return module * teeth / 2.0
 
 
-def _build_payload(assembly_project, output_step_path: str) -> dict:
+def _build_payload(assembly_project, output_step_path: str, workdir: Path) -> dict:
     instances = list(assembly_project.cad_instances.select_related('source_project', 'source_mesh').all())
     if not instances:
         raise CadAssembleError("Aucune CadAssemblyInstance dans cet assemblage.")
@@ -83,7 +85,14 @@ def _build_payload(assembly_project, output_step_path: str) -> dict:
                 f"L'instance « {instance.label or instance.source_project.name} » "
                 f"référence un Mesh sans STEP (pas produit par CAD_BUILD)."
             )
-        instances_payload.append({'id': instance.id, 'step_path': instance.source_mesh.step_file.path})
+        # freecadcmd tourne dans un process séparé, sans accès à storage (cf.
+        # docstring de ce module) : chaque STEP doit exister en local avant de
+        # lancer le sous-processus. Matérialisé dans workdir (pas via
+        # local_copy) : plusieurs fichiers doivent survivre en même temps,
+        # jusqu'à la fin de resolve_assembly.
+        step_local = workdir / f'input_{instance.id}.step'
+        storage_backend.download_to(instance.source_mesh.step_file, step_local)
+        instances_payload.append({'id': instance.id, 'step_path': str(step_local)})
 
     constraints_payload = []
     for c in constraints:
@@ -118,7 +127,7 @@ def resolve_assembly(assembly_project, workdir: Path) -> dict:
     message du solveur est répercuté tel quel, jamais avalé, cf. to_do_3D.md).
     """
     output_step_path = str(workdir / 'assembly_result.step')
-    payload = _build_payload(assembly_project, output_step_path)
+    payload = _build_payload(assembly_project, output_step_path, workdir)
 
     in_path = workdir / 'assemble_input'
     out_path = workdir / 'assemble_output'

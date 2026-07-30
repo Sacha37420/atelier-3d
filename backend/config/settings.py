@@ -65,8 +65,38 @@ USE_TZ = True
 # apiUrl (cf. ApiService.mediaUrl()), qui inclut déjà le préfixe Caddy en prod.
 # Non préfixé ici, la route 'media/<path:path>' matche identiquement en local
 # (accès direct au port backend) et derrière Caddy — un seul comportement à tester.
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 MEDIA_URL = '/media/'
+
+# Les octets ne sont plus sur un volume propre à l'app : ils vivent dans l'app
+# storage, point d'entrée unique du lab pour les fichiers utilisateur (cf.
+# CLAUDE.md racine, section « Fichiers rasters / médias »). Les modèles sont
+# inchangés — c'est le backend de fichiers Django qui parle à l'API storage,
+# voir api/storage_backend.py. Plus de MEDIA_ROOT : il n'existe aucun répertoire
+# local d'où ces fichiers pourraient être servis, et le laisser défini inviterait
+# à croire le contraire.
+STORAGES = {
+    'default': {'BACKEND': 'api.storage_backend.LabStorage'},
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+}
+STORAGE_INTERNAL_URL = config('STORAGE_INTERNAL_URL', default='http://storage-backend:8000')
+STORAGE_NAMESPACE = config('STORAGE_NAMESPACE', default='atelier-3d')
+# Compte de service (client_credentials) — client compagnon confidentiel créé par
+# create-app-client.sh, déclenché par la présence de
+# .keycloak-service-account-roles (fichier sans aucun rôle : cette app
+# n'administre pas Keycloak, elle n'utilise ce client que pour storage). C'est le
+# worker Celery qui en a besoin : il écrit maillages/glTF/STEP longtemps après la
+# fin de la requête qui a lancé le job, sans utilisateur connecté.
+KEYCLOAK_ADMIN_CLIENT_ID = config('KEYCLOAK_ADMIN_CLIENT_ID', default='atelier-3d-admin')
+KEYCLOAK_ADMIN_CLIENT_SECRET = config('KEYCLOAK_ADMIN_CLIENT_SECRET', default='')
+
+# ── Répertoire de travail des jobs (scratch local, jamais dans storage) ────────
+# Intermédiaires de calcul : bases COLMAP, nuages de points denses, images
+# redimensionnées — plusieurs Go par job, lus et réécrits en boucle par des
+# outils natifs. Les faire transiter par HTTP serait absurde et ils n'ont aucune
+# valeur une fois le job terminé (même raisonnement que le volume `downloads` de
+# robot-lab). Volume Docker local NON-external : clean2.sh peut le vider sans
+# rien perdre. Voir api/storage_backend.scratch_dir() / purge_scratch().
+SCRATCH_ROOT = config('SCRATCH_ROOT', default='/app/scratch')
 
 # ── Celery / file de tâches asynchrones ────────────────────────────────────────
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://redis:6379/0')

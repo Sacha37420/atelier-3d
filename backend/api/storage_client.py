@@ -20,19 +20,45 @@ branché sur ``STORAGES['default']``. Les ``FileField``/``ImageField`` des modè
 sont donc inchangés, et tout le plumbing habituel (``.save()``, ``.open()``,
 ``.name``, ``.url``, ``.delete()``) continue de fonctionner.
 
-Un unique partage (``settings.STORAGE_NAMESPACE``) pour toute l'app : les projets
-appartiennent à un ``owner_email`` mais le cloisonnement reste porté par les
-querysets de ``api/views.py``, exactement comme quand les octets étaient sur le
-volume local.
+── Un partage storage par projet TOP-LEVEL, pas un seul partage global ───────
 
-Le partage doit exister au préalable, côté storage ::
+Chantier « accès direct storage » (2026-07-30, Option A) : ``Project`` est
+désormais privé par défaut (``owner_email`` + ``ProjectShare``, cf.
+``api/models.py``/``api/permissions.py``). Ce module réplique maintenant
+``ProjectShare`` en de vrais ``Share``/``ShareMember`` par projet racine
+(``namespace_for_project``), exactement comme ``arbre-genealogique`` l'a fait
+pour ``TreeShare`` (voir ``arbre-genealogique/backend/api/storage_client.py``,
+dont ce module reprend le pattern) — c'est cette réplication qui rend sûr
+l'accès direct frontend → storage (``storage_backend.LabStorage.url()``) :
+storage devient lui-même le rempart, plus seulement les querysets de
+``api/views.py``.
 
-    python manage.py create_group_share atelier-3d \\
-        --owner sacha --required-groups developers
+Convention de nommage : ``<STORAGE_NAMESPACE>-project-<id>`` (ex.
+``atelier-3d-project-5``) — toujours l'id du projet RACINE, jamais celui d'un
+sous-projet CAO (Lot 5.2) : un sous-projet hérite entièrement du namespace de
+son parent (cf. ``Project.root_project``), aucun partage storage indépendant
+pour lui. Pas d'``<owner_username>`` dans le nom : comme pour
+``arbre-genealogique``, un ``Project`` n'a qu'un ``owner_email``, sans
+dérivation stable vers un username Keycloak.
 
-et le compte de service y être autorisé via
-``KEYCLOAK_SERVICE_WRITE_SHARES=atelier-3d-admin:atelier-3d``
-(``storage/.env``).
+Chaque partage est créé et administré par le compte de service lui-même
+(``owner_username`` = ``service:atelier-3d-admin`` côté storage) via
+``POST /api/shares/`` — pas seulement via le mécanisme de préfixe
+auto-vivifiant (``KEYCLOAK_SERVICE_WRITE_PREFIXES``), car ``ShareMember`` doit
+pouvoir être peuplé (propriétaire + invités ``ProjectShare``) **avant** même
+qu'un premier fichier existe (``resolve_namespace`` n'auto-crée le partage
+qu'au premier upload, trop tard pour ``POST /api/shares/<name>/members/``, qui
+exige un partage déjà existant). ``KEYCLOAK_SERVICE_WRITE_PREFIXES`` reste
+nécessaire pour autoriser l'upload/téléchargement sur ces namespaces
+(``resolve_namespace`` pour un compte de service) ::
+
+    KEYCLOAK_SERVICE_WRITE_PREFIXES=…,atelier-3d-admin:atelier-3d-project-
+
+L'ancien partage global fixe ``atelier-3d`` (``required_groups``) devient sans
+objet une fois ce chantier déployé : plus aucun serializer n'y écrit ni n'y
+lit (cf. rapport de chantier pour la décision — retiré, pas juste laissé de
+côté, pour ne pas laisser un accès de groupe dormant contourner le nouveau
+cloisonnement par projet).
 """
 from __future__ import annotations
 
@@ -107,21 +133,31 @@ def _headers() -> dict[str, str]:
     return {'Authorization': f'Bearer {_token()}'}
 
 
-def _files_url(suffix: str = '') -> str:
-    return (
-        f'{settings.STORAGE_INTERNAL_URL}/api/files/'
-        f'{settings.STORAGE_NAMESPACE}/{suffix}'
-    )
+_PROJECT_PREFIX = f'{settings.STORAGE_NAMESPACE}-project-'
 
 
-def upload(relative_path: str, fileobj, filename: str, content_type: str = '') -> dict:
-    """Dépose `fileobj` sous `relative_path`. Écrase un fichier déjà présent au
-    même chemin. Retourne le JSON de StoredFileSerializer (voir
-    storage/backend/api/views.py)."""
+def namespace_for_project(project_id: int) -> str:
+    """Nom du partage storage dédié à CE projet — toujours l'id d'un projet
+    RACINE (cf. Project.root_project) — voir le docstring du module."""
+    return f'{_PROJECT_PREFIX}{project_id}'
+
+
+def _files_url(namespace: str, suffix: str = '') -> str:
+    return f'{settings.STORAGE_INTERNAL_URL}/api/files/{namespace}/{suffix}'
+
+
+def upload(relative_path: str, fileobj, filename: str, content_type: str = '',
+           namespace: str | None = None) -> dict:
+    """Dépose `fileobj` sous `relative_path` dans `namespace` (défaut : l'ancien
+    partage global fixe, conservé uniquement pour compatibilité de signature —
+    plus utilisé en pratique, cf. storage_backend._namespace_for_name). Écrase
+    un fichier déjà présent au même chemin. Retourne le JSON de
+    StoredFileSerializer (voir storage/backend/api/views.py)."""
+    namespace = namespace or settings.STORAGE_NAMESPACE
     files = {'file': (filename, fileobj, content_type or 'application/octet-stream')}
     try:
         resp = requests.post(
-            _files_url(), headers=_headers(),
+            _files_url(namespace), headers=_headers(),
             data={'relative_path': relative_path}, files=files,
             timeout=_TRANSFER_TIMEOUT,
         )
@@ -134,12 +170,13 @@ def upload(relative_path: str, fileobj, filename: str, content_type: str = '') -
     return resp.json()
 
 
-def download(relative_path: str) -> requests.Response:
+def download(relative_path: str, namespace: str | None = None) -> requests.Response:
     """Retourne la réponse streamée (`stream=True`) — à l'appelant de la
     consommer et de la fermer (cf. api/storage_backend.py)."""
+    namespace = namespace or settings.STORAGE_NAMESPACE
     try:
         resp = requests.get(
-            _files_url(f'content/{relative_path}'), headers=_headers(),
+            _files_url(namespace, f'content/{relative_path}'), headers=_headers(),
             stream=True, timeout=_TRANSFER_TIMEOUT,
         )
     except requests.RequestException as exc:
@@ -151,10 +188,11 @@ def download(relative_path: str) -> requests.Response:
     return resp
 
 
-def delete(relative_path: str) -> None:
+def delete(relative_path: str, namespace: str | None = None) -> None:
+    namespace = namespace or settings.STORAGE_NAMESPACE
     try:
         resp = requests.delete(
-            _files_url(f'content/{relative_path}'), headers=_headers(), timeout=_TIMEOUT,
+            _files_url(namespace, f'content/{relative_path}'), headers=_headers(), timeout=_TIMEOUT,
         )
     except requests.RequestException as exc:
         raise StorageClientError(f'storage injoignable : {exc}') from exc
@@ -162,12 +200,13 @@ def delete(relative_path: str) -> None:
         raise StorageClientError(f'Suppression storage échouée (HTTP {resp.status_code}).')
 
 
-def listing(prefix: str = '') -> list[dict]:
+def listing(prefix: str = '', namespace: str | None = None) -> list[dict]:
     """Métadonnées des fichiers du partage sous `prefix` (relative_path, size,
     content_type…). Sert à `exists()`, `size()` et `listdir()` du backend Django."""
+    namespace = namespace or settings.STORAGE_NAMESPACE
     try:
         resp = requests.get(
-            _files_url(), headers=_headers(),
+            _files_url(namespace), headers=_headers(),
             params={'prefix': prefix} if prefix else None, timeout=_TIMEOUT,
         )
     except requests.RequestException as exc:
@@ -175,3 +214,115 @@ def listing(prefix: str = '') -> list[dict]:
     if resp.status_code != 200:
         raise StorageClientError(f'Listing storage échoué (HTTP {resp.status_code}).')
     return resp.json()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Synchronisation Share/ShareMember — réplique ProjectShare (+ propriétaire)
+# dans storage, pour que l'accès direct (LabStorage.url()) soit sûr : storage
+# devient lui-même le rempart, plus seulement api/permissions.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _shares_url(suffix: str = '') -> str:
+    return f'{settings.STORAGE_INTERNAL_URL}/api/shares/{suffix}'
+
+
+def ensure_share(namespace: str) -> None:
+    """Crée le partage s'il n'existe pas encore (idempotent) — voir le
+    docstring équivalent de arbre-genealogique/backend/api/storage_client.py
+    pour le détail de la course/du filet de rattrapage reproduits ici."""
+    try:
+        list_members(namespace)
+        return  # existe déjà et nous appartient : rien à faire.
+    except StorageClientError:
+        pass
+
+    try:
+        resp = requests.post(
+            _shares_url(), headers=_headers(), data={'name': namespace}, timeout=_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise StorageClientError(f'storage injoignable : {exc}') from exc
+    if resp.status_code == 201:
+        return
+
+    try:
+        list_members(namespace)
+        return
+    except StorageClientError:
+        pass
+    raise StorageClientError(f'Création du partage storage échouée (HTTP {resp.status_code}) : {resp.text[:200]}')
+
+
+def list_members(namespace: str) -> list[dict]:
+    try:
+        resp = requests.get(
+            _shares_url(f'{namespace}/members/'), headers=_headers(), timeout=_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise StorageClientError(f'storage injoignable : {exc}') from exc
+    if resp.status_code != 200:
+        raise StorageClientError(f'Lecture des membres storage échouée (HTTP {resp.status_code}).')
+    return resp.json()
+
+
+def set_member(namespace: str, email: str, role: str) -> None:
+    try:
+        resp = requests.post(
+            _shares_url(f'{namespace}/members/'), headers=_headers(),
+            data={'member_email': email, 'role': role}, timeout=_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise StorageClientError(f'storage injoignable : {exc}') from exc
+    if resp.status_code != 201:
+        raise StorageClientError(f'Ajout de membre storage échoué (HTTP {resp.status_code}) : {resp.text[:200]}')
+
+
+def remove_member(namespace: str, email: str) -> None:
+    try:
+        resp = requests.delete(
+            _shares_url(f'{namespace}/members/{email}/'), headers=_headers(), timeout=_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise StorageClientError(f'storage injoignable : {exc}') from exc
+    if resp.status_code not in (204, 404):
+        raise StorageClientError(f'Retrait de membre storage échoué (HTTP {resp.status_code}).')
+
+
+def sync_project_share(project) -> None:
+    """Aligne le partage storage du projet RACINE `project` sur son état DB
+    actuel (propriétaire + ProjectShare).
+
+    `project` DOIT être top-level (`parent_project` nul) — appeler avec
+    `project.root_project` sinon (cf. api/permissions.py). Un sous-projet n'a
+    pas de partage storage propre : ses fichiers vivent déjà dans le namespace
+    de son parent (cf. api/storage_backend.py), rien à synchroniser pour lui.
+
+    Recalcule l'ensemble complet des membres à chaque appel plutôt que
+    d'incrémenter à partir de l'événement déclencheur : plus simple à
+    raisonner, et auto-corrige toute dérive d'un appel précédent resté partiel
+    (storage temporairement injoignable en cours de synchronisation).
+
+    Le propriétaire du projet est toujours membre en écriture : c'est lui qui
+    dépose les photos/lance les jobs, et le partage storage appartient au
+    compte de service (jamais à lui) — sans cette ligne son propre token
+    n'aurait aucun accès direct à ses propres fichiers.
+    """
+    assert project.parent_project_id is None, (
+        "sync_project_share() attend un projet racine — utiliser project.root_project."
+    )
+    namespace = namespace_for_project(project.pk)
+    ensure_share(namespace)
+
+    wanted: dict[str, str] = {project.owner_email: 'write'}
+    for share in project.shares.all():
+        wanted[share.email] = 'write' if share.role == 'EDITOR' else 'read'
+    wanted.pop('', None)  # owner_email vide (ne devrait plus arriver après la migration 0009)
+
+    existing = {m['member_email']: m['role'] for m in list_members(namespace)}
+
+    for email, role in wanted.items():
+        if existing.get(email) != role:
+            set_member(namespace, email, role)
+    for email in existing:
+        if email not in wanted:
+            remove_member(namespace, email)

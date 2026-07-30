@@ -10,16 +10,17 @@ from django.utils.text import get_valid_filename
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import generics, status
+from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 
-from . import facade, reconstruction, repair, segmentation, storage_backend, storage_client, video_import
+from . import facade, permissions, reconstruction, repair, segmentation, storage_backend, storage_client, video_import
 from .models import (
-    Department, UserRecord, Project, Photo, Job, Mesh, Part, Joint, PhotoLabel, SemanticClass,
-    CadSketch, CadOperation, CadAssemblyInstance, CadAssemblyConstraint,
+    Department, UserRecord, Project, ProjectShare, Photo, Job, Mesh, Part, Joint, PhotoLabel,
+    SemanticClass, CadSketch, CadOperation, CadAssemblyInstance, CadAssemblyConstraint,
 )
 from .serializers import (
     DepartmentSerializer, UserRecordSerializer,
-    ProjectSerializer, ProjectDetailSerializer, PhotoSerializer, JobSerializer,
+    ProjectSerializer, ProjectDetailSerializer, ProjectShareSerializer, PhotoSerializer, JobSerializer,
     PartSerializer, JointSerializer, PhotoLabelSerializer, SemanticClassSerializer,
     CadSketchSerializer, CadOperationSerializer,
     CadAssemblyInstanceSerializer, CadAssemblyConstraintSerializer,
@@ -27,6 +28,20 @@ from .serializers import (
 from .tasks import (
     run_reconstruction, run_repair, run_facade_segmentation, run_cad_build, run_cad_assemble,
 )
+
+
+class StorageUnavailable(APIException):
+    """Levée quand la synchronisation storage (Share/ShareMember) échoue sur un
+    chemin où elle ne peut pas être traitée en best-effort : un partage/retrait
+    (ProjectShareListCreateView/ProjectShareDetailView) qui ne se répercuterait
+    pas dans storage laisserait l'accès direct frontend → storage désynchronisé
+    de ProjectShare — c'est justement ce que cette synchronisation est censée
+    empêcher (cf. api/storage_client.py, sync_project_share). Même pattern que
+    arbre-genealogique/backend/api/views.py (StorageUnavailable/TreeShareViewSet)."""
+
+    status_code = 502
+    default_detail = 'Stockage indisponible.'
+    default_code = 'storage_unavailable'
 
 
 class MeView(APIView):
@@ -79,30 +94,55 @@ class UserListView(generics.ListAPIView):
 class ProjectListCreateView(generics.ListCreateAPIView):
     """
     GET /api/projects/ — liste des projets TOP-LEVEL uniquement
-    (`parent_project` nul) : une sous-partie CAO (Lot 5.1) rattachée à un
-    Project(ASSEMBLY) n'apparaît plus ici, seulement dans
-    `/api/projects/<id>/sub-parts/` de son parent (cf. décision du 2026-07-26 —
-    les pièces individuelles ne sont pas des projets indépendants).
-    POST /api/projects/ — crée un projet top-level.
+    (`parent_project` nul), restreinte à ceux visibles par l'utilisateur
+    courant (propriétaire, ou membre d'un ProjectShare — cf. api/permissions.py,
+    chantier « accès direct storage » du 2026-07-30, Option A : Project est
+    privé par défaut depuis ce chantier, ce n'était PAS le cas avant). Une
+    sous-partie CAO (Lot 5.1) rattachée à un Project(ASSEMBLY) n'apparaît
+    jamais ici, seulement dans `/api/projects/<id>/sub-parts/` de son parent.
+    POST /api/projects/ — crée un projet top-level, provisionne son partage
+    storage (best-effort : un projet neuf n'a encore aucun fichier, un échec
+    ici n'ouvre ni ne ferme aucun accès, le prochain sync_project_share
+    rattrapera l'état).
     """
 
-    queryset = Project.objects.filter(parent_project__isnull=True)
     serializer_class = ProjectSerializer
 
+    def get_queryset(self):
+        email = getattr(self.request.user, 'email', '')
+        return permissions.visible_projects(email).filter(parent_project__isnull=True)
+
+    def get_serializer_context(self):
+        return {**super().get_serializer_context(), 'role_of': self._role_of}
+
+    def _role_of(self, project):
+        return permissions.role_on(project, getattr(self.request.user, 'email', ''))
+
     def perform_create(self, serializer):
-        serializer.save(owner_email=getattr(self.request.user, 'email', ''))
+        project = serializer.save(owner_email=getattr(self.request.user, 'email', ''))
+        try:
+            storage_client.sync_project_share(project)
+        except storage_client.StorageClientError:
+            pass
 
 
 class ProjectDetailView(generics.RetrieveUpdateAPIView):
     """
     GET   /api/projects/<id>/ — détail complet (photos, jobs, maillages).
+          Visible au propriétaire et à tout membre d'un ProjectShare (VIEWER
+          ou EDITOR) — cf. api/permissions.py.
     PATCH /api/projects/<id>/ — met à jour name/description/project_type, et
-                                 surtout `scale_meters_per_unit` (calibration
-                                 d'échelle, cf. viewer three.js frontend).
+          surtout `scale_meters_per_unit` (calibration d'échelle, cf. viewer
+          three.js frontend). Réservé au propriétaire et aux EDITOR.
     """
 
-    queryset = Project.objects.all()
     http_method_names = ['get', 'patch', 'head', 'options']
+
+    def get_queryset(self):
+        email = getattr(self.request.user, 'email', '')
+        if self.request.method in ('GET', 'HEAD'):
+            return permissions.visible_projects(email)
+        return permissions.editable_projects(email)
 
     def get_serializer_context(self):
         # Les vues génériques DRF injectent 'request' par défaut, ce qui fait
@@ -119,17 +159,114 @@ class ProjectDetailView(generics.RetrieveUpdateAPIView):
         # app — cf. ApiService.storageBase).
         context = super().get_serializer_context()
         context.pop('request', None)
+        context['role_of'] = self._role_of
         return context
+
+    def _role_of(self, project):
+        return permissions.role_on(project, getattr(self.request.user, 'email', ''))
 
     def get_serializer_class(self):
         return ProjectDetailSerializer if self.request.method == 'GET' else ProjectSerializer
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Partages — ProjectShare (email + rôle read/write), réservés aux projets
+# TOP-LEVEL. Même pattern que TreeShareViewSet (arbre-genealogique), adapté au
+# style de vues d'atelier-3d (APIView explicites imbriquées sous
+# /api/projects/<id>/…, comme cad-sketches/cad-operations/sub-parts) plutôt
+# qu'un ModelViewSet + DefaultRouter (jamais utilisé ailleurs dans cette app).
+# ──────────────────────────────────────────────────────────────────────────────
+class ProjectShareListCreateView(APIView):
+    """
+    GET  /api/projects/<id>/shares/ — partages du projet <id>. Réservé au
+         propriétaire (gérer les partages, comme supprimer le projet, est une
+         prérogative du propriétaire — cf. api/permissions.py, check_owner).
+    POST /api/projects/<id>/shares/ — invite quelqu'un (body : {email, role}),
+         ou change son rôle si déjà invité (upsert — un second POST pour la
+         même adresse ne doit pas échouer avec un 400 incompréhensible, c'est
+         le geste attendu pour « passer quelqu'un de lecture à édition »).
+         Synchronise storage (Share/ShareMember) dans la même transaction
+         locale : un échec storage annule aussi le ProjectShare, plutôt que de
+         laisser un partage « actif » côté app mais invisible pour storage
+         (cf. api/storage_client.sync_project_share).
+    """
+
+    def get(self, request, pk):
+        project = permissions.get_owned_project(request, pk)
+        return Response(ProjectShareSerializer(project.shares.all(), many=True).data)
+
+    def post(self, request, pk):
+        project = permissions.get_owned_project(request, pk)
+        # get_owned_project() ne renvoie que des projets top-level
+        # (permissions.owned_projects filtre déjà parent_project__isnull=True) —
+        # défensif seulement, ne devrait jamais se produire :
+        if project.parent_project_id is not None:
+            return Response(
+                {'detail': "Un sous-projet ne peut pas avoir son propre partage."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        serializer = ProjectShareSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+        if email == project.owner_email:
+            return Response({'detail': 'Ce projet vous appartient déjà.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            with transaction.atomic():
+                share, _ = ProjectShare.objects.update_or_create(
+                    project=project,
+                    email=email,
+                    defaults={
+                        'role': serializer.validated_data.get('role', ProjectShare.Role.VIEWER),
+                        'invited_by': getattr(request.user, 'email', ''),
+                    },
+                )
+                storage_client.sync_project_share(project)
+        except storage_client.StorageClientError as exc:
+            raise StorageUnavailable(f'Stockage indisponible : {exc}')
+        return Response(ProjectShareSerializer(share).data, status=status.HTTP_201_CREATED)
+
+
+class ProjectShareDetailView(APIView):
+    """PATCH/DELETE /api/project-shares/<id>/ — changer le rôle ou retirer un
+    partage. Réservé au propriétaire du projet concerné."""
+
+    def _get_share(self, request, pk) -> ProjectShare:
+        share = get_object_or_404(ProjectShare, pk=pk)
+        permissions.check_owner(share.project, request)
+        return share
+
+    def patch(self, request, pk):
+        share = self._get_share(request, pk)
+        role = request.data.get('role')
+        if role not in dict(ProjectShare.Role.choices):
+            return Response({'detail': "'role' invalide."}, status=status.HTTP_400_BAD_REQUEST)
+        share.role = role
+        try:
+            with transaction.atomic():
+                share.save(update_fields=['role'])
+                storage_client.sync_project_share(share.project)
+        except storage_client.StorageClientError as exc:
+            raise StorageUnavailable(f'Stockage indisponible : {exc}')
+        return Response(ProjectShareSerializer(share).data)
+
+    def delete(self, request, pk):
+        share = self._get_share(request, pk)
+        project = share.project
+        try:
+            with transaction.atomic():
+                share.delete()
+                storage_client.sync_project_share(project)
+        except storage_client.StorageClientError as exc:
+            raise StorageUnavailable(f'Stockage indisponible : {exc}')
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class PhotoUploadView(APIView):
     """POST /api/projects/<id>/photos/ — dépôt d'une ou plusieurs photos (glisser-déposer)."""
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         files = request.FILES.getlist('files')
         if not files:
             return Response({'detail': "Aucun fichier reçu (champ 'files')."},
@@ -142,7 +279,8 @@ class PhotoUploadView(APIView):
         return Response(PhotoSerializer(created, many=True).data, status=status.HTTP_201_CREATED)
 
     def delete(self, request, pk, photo_id=None):
-        photo = get_object_or_404(Photo, pk=photo_id, project_id=pk)
+        project = permissions.get_editable_project(request, pk)
+        photo = get_object_or_404(Photo, pk=photo_id, project=project)
         photo.file.delete(save=False)
         photo.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -158,7 +296,7 @@ class VideoUploadView(APIView):
     """
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         video_file = request.FILES.get('file')
         if not video_file:
             return Response({'detail': "Aucun fichier reçu (champ 'file')."},
@@ -195,7 +333,7 @@ class ReconstructionEstimateView(APIView):
     """
 
     def get(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_visible_project(request, pk)
         preset = request.query_params.get('preset', reconstruction.DEFAULT_PRESET)
         if preset not in reconstruction.PRESETS:
             return Response({'detail': 'Preset inconnu.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -219,7 +357,7 @@ class ReconstructionLaunchView(APIView):
     """
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         preset = request.data.get('preset', reconstruction.DEFAULT_PRESET)
         if preset not in reconstruction.PRESETS:
             return Response({'detail': 'Preset inconnu.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -258,7 +396,7 @@ class RepairLaunchView(APIView):
     """
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         if not project.meshes.exists():
             return Response(
                 {'detail': "Aucun maillage à réparer — lancez d'abord une reconstruction."},
@@ -311,6 +449,7 @@ class MeshAutoOrientView(APIView):
 
     def get(self, request, pk):
         mesh = get_object_or_404(Mesh, pk=pk)
+        permissions.check_read(mesh.project, request)
         try:
             with storage_backend.local_copy(mesh.file) as mesh_path:
                 suggestion = repair.suggest_print_orientation(mesh_path)
@@ -337,6 +476,7 @@ class MeshExportView(APIView):
     def get(self, request, pk):
         mesh = get_object_or_404(Mesh, pk=pk)
         project = mesh.project
+        permissions.check_read(project, request)
         if not project.has_scale:
             return Response(
                 {'detail': "Échelle non calibrée pour ce projet — impossible d'exporter un fichier "
@@ -404,10 +544,12 @@ class PartListCreateView(APIView):
 
     def get(self, request, mesh_id):
         mesh = get_object_or_404(Mesh, pk=mesh_id)
+        permissions.check_read(mesh.project, request)
         return Response(PartSerializer(mesh.parts.all(), many=True).data)
 
     def post(self, request, mesh_id):
         mesh = get_object_or_404(Mesh, pk=mesh_id)
+        permissions.check_write(mesh.project, request)
         name = (request.data.get('name') or '').strip()
         face_ids = request.data.get('face_ids')
         if not name:
@@ -432,6 +574,7 @@ class PartSuggestView(APIView):
 
     def post(self, request, mesh_id):
         mesh = get_object_or_404(Mesh, pk=mesh_id)
+        permissions.check_write(mesh.project, request)
         try:
             with storage_backend.local_copy(mesh.file) as mesh_path:
                 suggestions = segmentation.suggest_parts(mesh_path)
@@ -454,6 +597,7 @@ class PartDetailView(APIView):
 
     def patch(self, request, pk):
         part = get_object_or_404(Part, pk=pk)
+        permissions.check_write(part.mesh.project, request)
         name = request.data.get('name')
         face_ids = request.data.get('face_ids')
         if name is not None:
@@ -470,6 +614,7 @@ class PartDetailView(APIView):
 
     def delete(self, request, pk):
         part = get_object_or_404(Part, pk=pk)
+        permissions.check_write(part.mesh.project, request)
         part.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -501,11 +646,13 @@ class JointListCreateView(APIView):
 
     def get(self, request, mesh_id):
         mesh = get_object_or_404(Mesh, pk=mesh_id)
+        permissions.check_read(mesh.project, request)
         joints = Joint.objects.filter(parent_part__mesh=mesh)
         return Response(JointSerializer(joints, many=True).data)
 
     def post(self, request, mesh_id):
         mesh = get_object_or_404(Mesh, pk=mesh_id)
+        permissions.check_write(mesh.project, request)
         try:
             parent = Part.objects.get(pk=request.data.get('parent_part'), mesh=mesh)
             child = Part.objects.get(pk=request.data.get('child_part'), mesh=mesh)
@@ -546,6 +693,7 @@ class JointDetailView(APIView):
 
     def patch(self, request, pk):
         joint = get_object_or_404(Joint, pk=pk)
+        permissions.check_write(joint.parent_part.mesh.project, request)
         if 'joint_type' in request.data:
             if request.data['joint_type'] not in dict(Joint.TYPE_CHOICES):
                 return Response({'detail': "'joint_type' invalide."}, status=status.HTTP_400_BAD_REQUEST)
@@ -558,6 +706,7 @@ class JointDetailView(APIView):
 
     def delete(self, request, pk):
         joint = get_object_or_404(Joint, pk=pk)
+        permissions.check_write(joint.parent_part.mesh.project, request)
         joint.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -576,6 +725,7 @@ class SuggestJointAxisView(APIView):
 
     def get(self, request, pk):
         part = get_object_or_404(Part, pk=pk)
+        permissions.check_read(part.mesh.project, request)
         other = get_object_or_404(Part, pk=request.query_params.get('other'), mesh=part.mesh)
         try:
             with storage_backend.local_copy(part.mesh.file) as mesh_path:
@@ -588,12 +738,14 @@ class SuggestJointAxisView(APIView):
 
 
 class JobListView(generics.ListAPIView):
-    """GET /api/jobs/?project=<id> — liste des jobs (récents, tous modules)."""
+    """GET /api/jobs/?project=<id> — liste des jobs (récents, tous modules),
+    restreinte aux projets visibles par l'utilisateur courant."""
 
     serializer_class = JobSerializer
 
     def get_queryset(self):
-        qs = Job.objects.all()
+        email = getattr(self.request.user, 'email', '')
+        qs = Job.objects.filter(project__in=permissions.visible_projects(email))
         project_id = self.request.query_params.get('project')
         if project_id:
             qs = qs.filter(project_id=project_id)
@@ -605,20 +757,21 @@ class JobDetailView(APIView):
 
     def get(self, request, pk):
         try:
-            return Response(JobSerializer(Job.objects.get(pk=pk)).data)
+            job = Job.objects.select_related('project').get(pk=pk)
         except Job.DoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
+        permissions.check_read(job.project, request)
+        return Response(JobSerializer(job).data)
 
 
 class MediaView(APIView):
     """
     GET /media/<path> — photos et maillages, derrière la même authentification
-    que le reste de l'API (IsAuthenticated + KeycloakJWTAuthentication, y compris
-    le contrôle de groupe). Proxie l'API storage (cf. api/storage_backend.py) :
-    le fichier n'est jamais exposé directement, storage n'a aucun chemin de
-    lecture anonyme. Avant la migration, ces fichiers étaient déjà réservés à
-    l'authentification (contrairement à conciergerie/carto-lab avant leur
-    migration) — cette vue préserve exactement ce même cloisonnement.
+    ET le même cloisonnement par projet que le reste de l'API (IsAuthenticated
+    + KeycloakJWTAuthentication + api.permissions.check_read, cf.
+    storage_backend.project_id_from_path). Proxie l'API storage (cf.
+    api/storage_backend.py) : le fichier n'est jamais exposé directement,
+    storage n'a aucun chemin de lecture anonyme.
 
     ⚠ N'est plus le chemin par défaut depuis le chantier « accès direct
     frontend → storage » (2026-07-30) : LabStorage.url() (api/storage_backend.py)
@@ -626,12 +779,21 @@ class MediaView(APIView):
     frontend (ApiService.mediaUrl()) lit photos/maillages/glTF/STEP directement
     sur storage, avec son propre token. Cette vue reste en place (fallback
     authentifié, ex. usage futur hors navigateur), mais aucun serializer ne
-    produit plus de chemin qui y mène.
+    produit plus de chemin qui y mène — le cloisonnement par projet ci-dessous
+    est donc défensif : sans lui, un chemin '/media/<path>?token=' devinable
+    (id de projet séquentiel) contournerait totalement le passage en privé par
+    défaut (Option A) en repassant par le compte de service, qui a accès à
+    tout.
     """
 
     def get(self, request, path):
+        project_id = storage_backend.project_id_from_path(path)
+        if project_id is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        project = get_object_or_404(Project, pk=project_id)
+        permissions.check_read(project, request)
         try:
-            upstream = storage_client.download(path)
+            upstream = storage_client.download(path, namespace=storage_backend.namespace_for_path(path))
         except FileNotFoundError:
             return Response(status=status.HTTP_404_NOT_FOUND)
         except storage_client.StorageClientError as exc:
@@ -658,10 +820,14 @@ class PhotoRegionsView(APIView):
     get_serializer_context() de vue générique : PhotoSerializer expose deux
     FileField (file, region_overlay), cf. le piège Caddy documenté sur
     ProjectDetailView plus haut dans ce fichier.
+
+    Écrit en base (cache region_map/region_overlay) : traité comme une
+    écriture (check_write), pas juste une lecture.
     """
 
     def get(self, request, pk):
         photo = get_object_or_404(Photo, pk=pk)
+        permissions.check_write(photo.project, request)
         if not photo.pose_resolved:
             return Response(
                 {'detail': "Cette photo n'a pas de pose caméra résolue — inutilisable pour la "
@@ -687,10 +853,12 @@ class PhotoLabelListCreateView(APIView):
 
     def get(self, request, photo_id):
         photo = get_object_or_404(Photo, pk=photo_id)
+        permissions.check_read(photo.project, request)
         return Response(PhotoLabelSerializer(photo.labels.all(), many=True).data)
 
     def post(self, request, photo_id):
         photo = get_object_or_404(Photo, pk=photo_id)
+        permissions.check_write(photo.project, request)
         semantic_class = request.data.get('semantic_class')
         if semantic_class not in dict(PhotoLabel.CLASS_CHOICES):
             return Response({'detail': "'semantic_class' invalide (attendu : mur, fenetre, porte, toit)."},
@@ -727,6 +895,7 @@ class PhotoLabelDetailView(APIView):
 
     def delete(self, request, pk):
         label = get_object_or_404(PhotoLabel, pk=pk)
+        permissions.check_write(label.photo.project, request)
         label.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -741,7 +910,7 @@ class FacadeEstimateView(APIView):
     """
 
     def get(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_visible_project(request, pk)
         n_photos = project.photos.filter(camera_pose__isnull=False).count()
         seconds = facade.estimate_duration_seconds(n_photos)
         return Response({
@@ -761,7 +930,7 @@ class FacadeLaunchView(APIView):
     """
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         if not project.has_mesh:
             return Response({'detail': "Aucun maillage — lancez d'abord une reconstruction."},
                              status=status.HTTP_400_BAD_REQUEST)
@@ -800,7 +969,9 @@ class SemanticClassListView(generics.ListAPIView):
     serializer_class = SemanticClassSerializer
 
     def get_queryset(self):
-        return SemanticClass.objects.filter(mesh_id=self.kwargs['mesh_id'])
+        mesh = get_object_or_404(Mesh, pk=self.kwargs['mesh_id'])
+        permissions.check_read(mesh.project, self.request)
+        return SemanticClass.objects.filter(mesh=mesh)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -814,11 +985,11 @@ class CadSketchListCreateView(APIView):
     """
 
     def get(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_visible_project(request, pk)
         return Response(CadSketchSerializer(project.cad_sketches.all(), many=True).data)
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         serializer = CadSketchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(project=project)
@@ -830,6 +1001,7 @@ class CadSketchDetailView(APIView):
 
     def patch(self, request, pk):
         sketch = get_object_or_404(CadSketch, pk=pk)
+        permissions.check_write(sketch.project, request)
         serializer = CadSketchSerializer(sketch, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -837,6 +1009,7 @@ class CadSketchDetailView(APIView):
 
     def delete(self, request, pk):
         sketch = get_object_or_404(CadSketch, pk=pk)
+        permissions.check_write(sketch.project, request)
         sketch.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -850,11 +1023,11 @@ class CadOperationListCreateView(APIView):
     """
 
     def get(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_visible_project(request, pk)
         return Response(CadOperationSerializer(project.cad_operations.all(), many=True).data)
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         data = request.data.copy()
         if not data.get('order'):
             data['order'] = (project.cad_operations.aggregate(m=Max('order'))['m'] or 0) + 1
@@ -869,6 +1042,7 @@ class CadOperationDetailView(APIView):
 
     def patch(self, request, pk):
         operation = get_object_or_404(CadOperation, pk=pk)
+        permissions.check_write(operation.project, request)
         serializer = CadOperationSerializer(operation, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -876,6 +1050,7 @@ class CadOperationDetailView(APIView):
 
     def delete(self, request, pk):
         operation = get_object_or_404(CadOperation, pk=pk)
+        permissions.check_write(operation.project, request)
         operation.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -891,7 +1066,7 @@ class CadBuildLaunchView(APIView):
     """
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         if not project.cad_operations.exists():
             return Response({'detail': "Aucune opération CAO à évaluer pour ce projet."},
                              status=status.HTTP_400_BAD_REQUEST)
@@ -928,14 +1103,23 @@ class SubPartListCreateView(APIView):
     d'être un projet top-level, cf. décision du 2026-07-26).
     POST /api/projects/<id>/sub-parts/ — crée une nouvelle sous-partie
     (`project_type=OBJECT` par défaut, `parent_project` forcé au parent).
+    Refuse (400) si `<id>` est déjà lui-même un sous-projet : une sous-partie
+    ne peut pas avoir de sous-partie (cf. Project.root_project — l'accès et le
+    partage storage supposent une profondeur d'un seul niveau, cf. rapport de
+    chantier « accès direct storage » du 2026-07-30).
     """
 
     def get(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_visible_project(request, pk)
         return Response(ProjectSerializer(project.sub_parts.all(), many=True).data)
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
+        if project.parent_project_id is not None:
+            return Response(
+                {'detail': "Un sous-projet ne peut pas avoir lui-même de sous-partie."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         data = request.data.copy()
         data.pop('parent_project', None)
         serializer = ProjectSerializer(data=data)
@@ -956,11 +1140,11 @@ class CadAssemblyInstanceListCreateView(APIView):
     """
 
     def get(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_visible_project(request, pk)
         return Response(CadAssemblyInstanceSerializer(project.cad_instances.all(), many=True).data)
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         data = request.data.copy()
         source_project = get_object_or_404(Project, pk=data.get('source_project'), parent_project=project)
         if not data.get('source_mesh'):
@@ -982,6 +1166,7 @@ class CadAssemblyInstanceDetailView(APIView):
 
     def delete(self, request, pk):
         instance = get_object_or_404(CadAssemblyInstance, pk=pk)
+        permissions.check_write(instance.assembly_project, request)
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -995,11 +1180,11 @@ class CadAssemblyConstraintListCreateView(APIView):
     """
 
     def get(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_visible_project(request, pk)
         return Response(CadAssemblyConstraintSerializer(project.cad_constraints.all(), many=True).data)
 
     def post(self, request, pk):
-        project = get_object_or_404(Project, pk=pk)
+        project = permissions.get_editable_project(request, pk)
         serializer = CadAssemblyConstraintSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(assembly_project=project)
@@ -1011,6 +1196,7 @@ class CadAssemblyConstraintDetailView(APIView):
 
     def delete(self, request, pk):
         constraint = get_object_or_404(CadAssemblyConstraint, pk=pk)
+        permissions.check_write(constraint.assembly_project, request)
         constraint.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -1025,6 +1211,7 @@ class CadAssembleLaunchView(APIView):
 
     def post(self, request, pk):
         project = get_object_or_404(Project, pk=pk, project_type=Project.ASSEMBLY)
+        permissions.check_write(project, request)
         if not project.cad_constraints.exists():
             return Response({'detail': "Aucune contrainte posée pour cet assemblage."},
                              status=status.HTTP_400_BAD_REQUEST)

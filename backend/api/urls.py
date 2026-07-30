@@ -1,7 +1,9 @@
 from django.urls import path
 from .views import (
     MeView, DepartmentListView, UserListView,
-    ProjectListCreateView, ProjectDetailView, PhotoUploadView, VideoUploadView,
+    ProjectListCreateView, ProjectDetailView,
+    ProjectShareListCreateView, ProjectShareDetailView,
+    PhotoUploadView, VideoUploadView,
     ReconstructionEstimateView, ReconstructionLaunchView, JobListView, JobDetailView,
     RepairLaunchView, MeshAutoOrientView, MeshExportView,
     PartListCreateView, PartSuggestView, PartDetailView,
@@ -23,6 +25,8 @@ urlpatterns = [
 
     path('projects/',                              ProjectListCreateView.as_view()),
     path('projects/<int:pk>/',                      ProjectDetailView.as_view()),
+    path('projects/<int:pk>/shares/',                ProjectShareListCreateView.as_view()),
+    path('project-shares/<int:pk>/',                 ProjectShareDetailView.as_view()),
     path('projects/<int:pk>/photos/',                PhotoUploadView.as_view()),
     path('projects/<int:pk>/photos/<int:photo_id>/', PhotoUploadView.as_view()),
     path('projects/<int:pk>/video/',                 VideoUploadView.as_view()),

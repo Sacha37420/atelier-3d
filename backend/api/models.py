@@ -113,6 +113,83 @@ class Project(models.Model):
         # (ou dont le SfM n'a enregistré aucune image) ne peut pas le lancer.
         return self.photos.filter(camera_pose__isnull=False).exists()
 
+    @property
+    def root_project(self) -> 'Project':
+        """
+        Le projet top-level dont dépend TOUT le contrôle d'accès de ce projet
+        (lui-même s'il est déjà top-level) — cf. api/permissions.py et
+        api/storage_backend.py.
+
+        Chantier « accès direct storage » (2026-07-30, Option A) : un
+        sous-projet CAO (Lot 5.2, `parent_project` non nul) n'a JAMAIS son
+        propre `ProjectShare` ni son propre partage storage — il hérite
+        ENTIÈREMENT de son projet racine (relation de COMPOSITION, pas un
+        rangement façon dossier : les `CadAssemblyInstance` d'un assemblage ne
+        référencent que des sous-parties du MÊME assemblage — jamais réutilisées
+        ailleurs, cf. `CadAssemblyInstanceListCreateView.post`). Son propre
+        `owner_email` (l'auteur de la création, pas forcément le propriétaire du
+        projet racine — cf. `SubPartListCreateView.post`) n'est donc jamais
+        consulté pour l'autorisation.
+
+        Une sous-partie ne peut elle-même avoir de sous-partie (refus explicite
+        dans `SubPartListCreateView.post`), donc la remontée s'arrête en
+        pratique après un seul niveau — gère une profondeur plus grande par
+        prudence (garde-fou anti-cycle), sans jamais la supposer.
+        """
+        node = self
+        seen = {node.pk}
+        while node.parent_project_id is not None:
+            parent = Project.objects.only('id', 'owner_email', 'parent_project_id').get(
+                pk=node.parent_project_id,
+            )
+            if parent.pk in seen:
+                break  # garde-fou anti-cycle : ne devrait jamais se produire
+            node = parent
+            seen.add(node.pk)
+        return node
+
+
+class ProjectShare(models.Model):
+    """
+    Accès donné à quelqu'un d'autre sur un projet TOP-LEVEL, désigné par son
+    e-mail — même pattern que `TreeShare` (arbre-genealogique/backend/api/models.py) :
+    l'invitation ne suppose pas que la personne se soit déjà connectée, l'e-mail
+    est le pivot d'identité de l'app (cf. UserRecord.email, alimenté depuis le
+    JWT).
+
+    Le propriétaire du projet n'apparaît pas ici : sa qualité vient de
+    `Project.owner_email`, et lui seul gère les partages et peut supprimer le
+    projet (cf. api/permissions.py, `check_owner`).
+
+    Réservé aux projets top-level (`parent_project` nul) — voir
+    `Project.root_project` et api/permissions.py. Un sous-projet CAO (Lot 5.2)
+    hérite ENTIÈREMENT du partage de son projet racine, jamais de
+    `ProjectShare` indépendant (cf. rapport de chantier « accès direct
+    storage » du 2026-07-30, décision utilisateur Option A). `ProjectShareViewSet`
+    refuse la création d'un `ProjectShare` sur un projet dont `parent_project`
+    n'est pas nul.
+    """
+
+    class Role(models.TextChoices):
+        VIEWER = 'VIEWER', 'Lecture'
+        EDITOR = 'EDITOR', 'Édition'
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='shares')
+    email = models.EmailField(max_length=255, db_index=True)
+    role = models.CharField(max_length=6, choices=Role.choices, default=Role.VIEWER)
+    invited_by = models.EmailField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_shares'
+        ordering = ['email']
+        constraints = [
+            models.UniqueConstraint(fields=['project', 'email'], name='uniq_project_share_per_project'),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.email} @ project#{self.project_id}'
+
 
 def photo_upload_path(instance, filename):
     return f'projects/{instance.project_id}/photos/{filename}'

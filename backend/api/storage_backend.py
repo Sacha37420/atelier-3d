@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import mimetypes
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -39,10 +40,45 @@ from django.utils.deconstruct import deconstructible
 
 from . import storage_client
 
+# Les six FileField/ImageField de cette app (Photo.file, Project.region_map/
+# region_overlay, Mesh.file/gltf_file/step_file) partagent tous le même
+# préfixe de chemin logique : 'projects/<id>/...' (cf. photo_upload_path()/
+# mesh_upload_path() ci-dessous). Chantier « accès direct storage »
+# (2026-07-30, Option A) : un partage storage PAR PROJET RACINE a remplacé
+# l'unique partage global fixe — ce module doit donc résoudre, pour chaque
+# `name`, le namespace storage correspondant (cf. namespace_for_path),
+# plutôt que d'utiliser `settings.STORAGE_NAMESPACE` partout.
+_PROJECT_PATH_RE = re.compile(r'^projects/(\d+)/')
+
+
+def project_id_from_path(name: str) -> int | None:
+    """Id du projet (racine OU sous-projet) désigné par un chemin storage
+    `name`/`path` de la forme 'projects/<id>/...' — None si `name` ne suit
+    pas cette convention. Public : réutilisé par api.views.MediaView pour
+    appliquer le même contrôle d'accès par projet que le reste de l'API à ce
+    qui reste un chemin brut côté URL ('media/<path:path>')."""
+    match = _PROJECT_PATH_RE.match(name)
+    return int(match.group(1)) if match else None
+
+
+def namespace_for_path(name: str) -> str:
+    """Résout le namespace storage (partage par projet RACINE) d'un chemin
+    `name` de la forme 'projects/<id>/...'. `<id>` peut être un sous-projet
+    CAO (Lot 5.2) : on remonte alors jusqu'à Project.root_project — un
+    sous-projet n'a pas de partage storage propre, ses fichiers vivent dans
+    le namespace de son projet racine (cf. api/storage_client.py)."""
+    project_id = project_id_from_path(name)
+    if project_id is None:
+        raise ValueError(f"Chemin storage inattendu (aucun id de projet) : {name!r}")
+    from .models import Project  # import tardif : évite un cycle avec models.py
+    project = Project.objects.only('id', 'parent_project_id').get(pk=project_id)
+    return storage_client.namespace_for_project(project.root_project.pk)
+
 
 @deconstructible
 class LabStorage(Storage):
-    """Stockage distant : chaque fichier est un objet du partage storage de l'app."""
+    """Stockage distant : chaque fichier est un objet d'un partage storage
+    (un par projet RACINE, cf. namespace_for_path ci-dessus)."""
 
     def _open(self, name, mode='rb'):
         if 'w' in mode:
@@ -50,7 +86,7 @@ class LabStorage(Storage):
                 "LabStorage ne sait pas ouvrir en écriture : passer par "
                 "field.save(nom, contenu) ou storage.save(nom, contenu)."
             )
-        resp = storage_client.download(name)
+        resp = storage_client.download(name, namespace=namespace_for_path(name))
         # Rapatriement intégral en mémoire : les appelants qui manipulent de gros
         # fichiers (maillages) passent par local_copy(), qui streame sur disque.
         return ContentFile(resp.content, name=name)
@@ -61,7 +97,9 @@ class LabStorage(Storage):
         # calcul de dimensions…) : repartir du début, sinon l'upload serait tronqué.
         with contextlib.suppress(Exception):
             content.seek(0)
-        storage_client.upload(name, content, Path(name).name, content_type)
+        storage_client.upload(
+            name, content, Path(name).name, content_type, namespace=namespace_for_path(name),
+        )
         # storage écrase sur (namespace, relative_path) : le nom demandé est
         # toujours le nom retenu, d'où get_available_name() ci-dessous.
         return name
@@ -80,7 +118,7 @@ class LabStorage(Storage):
     def delete(self, name):
         if not name:
             return
-        storage_client.delete(name)
+        storage_client.delete(name, namespace=namespace_for_path(name))
 
     def exists(self, name):
         return self._entry(name) is not None
@@ -94,7 +132,7 @@ class LabStorage(Storage):
     def _entry(self, name) -> dict | None:
         """Métadonnées du fichier `name`, ou None. Le listing est filtré par
         préfixe côté storage, donc une seule requête et une seule ligne."""
-        for entry in storage_client.listing(name):
+        for entry in storage_client.listing(name, namespace=namespace_for_path(name)):
             if entry['relative_path'] == name:
                 return entry
         return None
@@ -111,19 +149,27 @@ class LabStorage(Storage):
         # nginx-entrypoint.sh) qui préfixe par l'origine correcte et ajoute
         # `?token=` (le navigateur ne peut jamais poser d'en-tête Authorization
         # sur un <img>/GLTFLoader). Sécurité : c'est désormais storage lui-même
-        # qui est le rempart (KEYCLOAK_TRUSTED_CLIENTS + Share.required_groups
-        # sur le partage 'atelier-3d', PAS un contrôle par projet — cf. CLAUDE.md
-        # et le rapport de ce chantier : aucun ProjectShare n'existe, cette app
-        # n'a jamais restreint l'accès par owner_email, seulement par groupe
-        # Keycloak — le partage storage réplique exactement ce même périmètre).
-        # api.views.MediaView reste en place (fallback authentifié par le
-        # backend de l'app), mais n'est plus utilisé par défaut.
-        return f"/api/files/{settings.STORAGE_NAMESPACE}/content/{name}"
+        # qui est le rempart — un partage PAR PROJET RACINE (namespace_for_project),
+        # synchronisé sur Project.owner_email + ProjectShare à chaque changement
+        # (cf. api/storage_client.sync_project_share), pas plus le partage
+        # global fixe 'atelier-3d' ouvert à tout le groupe Keycloak (cf. rapport
+        # de chantier — Option A, Project privé par défaut). api.views.MediaView
+        # reste en place (fallback authentifié, cloisonné par projet lui aussi,
+        # cf. api/views.py) mais n'est plus utilisé par défaut.
+        return f"/api/files/{namespace_for_path(name)}/content/{name}"
 
     def listdir(self, path):
         prefix = path.rstrip('/') + '/' if path else ''
+        try:
+            namespace = namespace_for_path(prefix)
+        except ValueError:
+            # Préfixe qui ne désigne aucun projet précis (ex. '') : aucun appelant
+            # de cette app ne fait ça aujourd'hui (cf. grep sur listdir/
+            # default_storage au moment de ce chantier) — repli sur l'ancien
+            # partage global fixe plutôt que planter, par prudence uniquement.
+            namespace = settings.STORAGE_NAMESPACE
         dirs, files = set(), []
-        for entry in storage_client.listing(prefix):
+        for entry in storage_client.listing(prefix, namespace=namespace):
             reste = entry['relative_path'][len(prefix):]
             if '/' in reste:
                 dirs.add(reste.split('/', 1)[0])
@@ -159,7 +205,7 @@ def local_copy(fieldfile, suffix: str = ''):
     suffix = suffix or Path(fieldfile.name).suffix
     tmp = tempfile.NamedTemporaryFile(prefix='atelier3d-', suffix=suffix, delete=False)
     try:
-        resp = storage_client.download(fieldfile.name)
+        resp = storage_client.download(fieldfile.name, namespace=namespace_for_path(fieldfile.name))
         with tmp:
             for morceau in resp.iter_content(chunk_size=1024 * 1024):
                 tmp.write(morceau)
@@ -181,7 +227,7 @@ def download_to(fieldfile, dest: Path) -> Path:
     L'appelant est responsable du nettoyage (cf. `scratch_dir`/`purge_scratch` :
     `dest` vit déjà dans un répertoire de travail purgé en fin de job).
     """
-    resp = storage_client.download(fieldfile.name)
+    resp = storage_client.download(fieldfile.name, namespace=namespace_for_path(fieldfile.name))
     with open(dest, 'wb') as fh:
         for morceau in resp.iter_content(chunk_size=1024 * 1024):
             fh.write(morceau)

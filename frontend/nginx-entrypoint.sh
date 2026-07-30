@@ -12,7 +12,8 @@ window.__env = {
   keycloakRealm:    "${KEYCLOAK_REALM:-ssolab}",
   keycloakClientId: "${KEYCLOAK_CLIENT_ID}",
   apiUrl:           "https://${DOMAIN}/atelier-3d-api",
-  appUrl:           "https://${DOMAIN}/atelier-3d/"
+  appUrl:           "https://${DOMAIN}/atelier-3d/",
+  storageApiUrl:    "https://${DOMAIN}/storage-api"
 };
 JSEOF
 else
@@ -22,7 +23,8 @@ window.__env = {
   keycloakRealm:    "${KEYCLOAK_REALM:-ssolab}",
   keycloakClientId: "${KEYCLOAK_CLIENT_ID}",
   apiUrl:           window.location.protocol + '//' + window.location.hostname + ':${PORT_BACKEND:-8000}',
-  appUrl:           window.location.protocol + '//' + window.location.hostname + ':${PORT_FRONTEND:-4200}'
+  appUrl:           window.location.protocol + '//' + window.location.hostname + ':${PORT_FRONTEND:-4200}',
+  storageApiUrl:    window.location.protocol + '//' + window.location.hostname + ':${STORAGE_PORT_BACKEND:-8093}'
 };
 JSEOF
 fi

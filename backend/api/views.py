@@ -112,8 +112,11 @@ class ProjectDetailView(generics.RetrieveUpdateAPIView):
         # avant de transmettre à Django). Résultat : une URL absolue mais
         # incomplète, que le frontend prend pour définitive (mediaUrl() ne
         # préfixe/n'ajoute le token que sur un chemin relatif) et qui 404.
-        # Sans 'request' ici, FileField.url reste relatif ('/media/...') et
-        # c'est mediaUrl() côté frontend qui construit l'URL complète.
+        # Sans 'request' ici, FileField.url reste relatif ('/api/files/...',
+        # cf. api/storage_backend.LabStorage.url() — accès storage direct
+        # depuis le 2026-07-30, plus '/media/...') et c'est mediaUrl() côté
+        # frontend qui construit l'URL complète (sur storage, plus sur cette
+        # app — cf. ApiService.storageBase).
         context = super().get_serializer_context()
         context.pop('request', None)
         return context
@@ -616,6 +619,14 @@ class MediaView(APIView):
     lecture anonyme. Avant la migration, ces fichiers étaient déjà réservés à
     l'authentification (contrairement à conciergerie/carto-lab avant leur
     migration) — cette vue préserve exactement ce même cloisonnement.
+
+    ⚠ N'est plus le chemin par défaut depuis le chantier « accès direct
+    frontend → storage » (2026-07-30) : LabStorage.url() (api/storage_backend.py)
+    renvoie désormais un chemin storage direct, plus '/media/<path>' — le
+    frontend (ApiService.mediaUrl()) lit photos/maillages/glTF/STEP directement
+    sur storage, avec son propre token. Cette vue reste en place (fallback
+    authentifié, ex. usage futur hors navigateur), mais aucun serializer ne
+    produit plus de chemin qui y mène.
     """
 
     def get(self, request, path):

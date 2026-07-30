@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 import { KeycloakService } from './keycloak.service';
 
 interface EnvWindow {
-  __env?: { apiUrl?: string };
+  __env?: { apiUrl?: string; storageApiUrl?: string };
 }
 
 export type ProjectType = 'objet' | 'batiment' | 'assembly';
@@ -309,16 +309,40 @@ export class ApiService {
   }
 
   /**
-   * URL absolue d'un fichier média (photo, maillage), utilisable telle quelle
-   * dans un <img> ou passée à GLTFLoader. Le JWT part en paramètre d'URL : ni
-   * une balise <img> ni le fetch() interne de GLTFLoader ne peuvent poser
-   * d'en-tête Authorization (cf. MediaView côté backend, api/views.py).
+   * Origine de l'app storage (même DOMAIN que cette app, chemin Caddy
+   * '/storage-api' différent — donc même origine, pas de souci CORS ; cf.
+   * CLAUDE.md « Verrou 2 généralisé »). Utilisée uniquement par mediaUrl()
+   * ci-dessous : depuis le chantier « accès direct frontend → storage »
+   * (2026-07-30), photos/maillages/glTF/STEP sont lus directement sur storage
+   * au lieu d'être proxiés par MediaView (backend de cette app).
+   */
+  get storageBase(): string {
+    return (window as unknown as EnvWindow).__env?.storageApiUrl
+      ?? 'http://localhost:8093';
+  }
+
+  /**
+   * URL absolue d'un fichier média (photo, maillage, glTF, STEP), utilisable
+   * telle quelle dans un <img>, un <a href> ou passée à GLTFLoader — pointe
+   * directement sur l'app storage (ProjectSerializer/MeshSerializer/
+   * PhotoSerializer renvoient un chemin storage relatif, cf.
+   * api/storage_backend.LabStorage.url() côté backend), plus sur cette app.
+   * Le JWT part en paramètre d'URL : ni une balise <img> ni le fetch() interne
+   * de GLTFLoader ne peuvent poser d'en-tête Authorization.
+   *
+   * ⚠ Dépend du fallback `?token=` de KeycloakJWTAuthentication côté storage
+   * (storage/backend/api/authentication.py) — chantier fondation du lot
+   * « sharing-model », pas encore vérifié livré au moment de ce commit. Sans
+   * lui, storage ne lit QUE l'en-tête Authorization : toute image/viewer 3D
+   * utilisant cette URL recevra 401 tant qu'il n'est pas déployé (un fetch()
+   * avec en-tête explicite, lui, fonctionnerait déjà). Revérifier avant de
+   * considérer cette fonction opérationnelle.
    */
   mediaUrl(path: string | null): string {
     if (!path) return '';
     if (/^https?:\/\//.test(path)) return path;
     const token = this.kc.getToken();
-    return `${this.base}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    return `${this.storageBase}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
   }
 
   getMe(): Observable<unknown> {

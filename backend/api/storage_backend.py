@@ -100,9 +100,25 @@ class LabStorage(Storage):
         return None
 
     def url(self, name):
-        # Servie par api.views.MediaView, qui proxie storage derrière
-        # l'authentification de l'API (le fichier n'est jamais exposé en clair).
-        return f"{settings.MEDIA_URL}{name}"
+        # Chemin storage DIRECT (chantier « accès direct frontend → storage »,
+        # 2026-07-30) — plus un chemin `MEDIA_URL` proxié par api.views.MediaView.
+        # Le token n'est jamais concaténé ici : ce champ n'est qu'un chemin
+        # relatif au serveur storage (pas de domaine, pas de préfixe Caddy
+        # '/storage-api' — Caddy le retire déjà via handle_path avant que le
+        # conteneur storage-backend ne le voie, exactement comme
+        # FORCE_SCRIPT_NAME/'atelier-3d-api' pour cette app, cf. settings.py).
+        # C'est ApiService.mediaUrl() côté frontend (storageApiUrl, cf.
+        # nginx-entrypoint.sh) qui préfixe par l'origine correcte et ajoute
+        # `?token=` (le navigateur ne peut jamais poser d'en-tête Authorization
+        # sur un <img>/GLTFLoader). Sécurité : c'est désormais storage lui-même
+        # qui est le rempart (KEYCLOAK_TRUSTED_CLIENTS + Share.required_groups
+        # sur le partage 'atelier-3d', PAS un contrôle par projet — cf. CLAUDE.md
+        # et le rapport de ce chantier : aucun ProjectShare n'existe, cette app
+        # n'a jamais restreint l'accès par owner_email, seulement par groupe
+        # Keycloak — le partage storage réplique exactement ce même périmètre).
+        # api.views.MediaView reste en place (fallback authentifié par le
+        # backend de l'app), mais n'est plus utilisé par défaut.
+        return f"/api/files/{settings.STORAGE_NAMESPACE}/content/{name}"
 
     def listdir(self, path):
         prefix = path.rstrip('/') + '/' if path else ''

@@ -7,4 +7,5 @@ window.__env = {
   keycloakClientId: 'atelier-3d',
   appUrl:           'http://localhost:4210',
   apiUrl:           'http://localhost:8092',
+  storageApiUrl:    'http://localhost:8093',
 };

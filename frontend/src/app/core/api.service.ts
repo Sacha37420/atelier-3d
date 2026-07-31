@@ -77,7 +77,7 @@ export interface Mesh {
 export type JobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'ERROR';
 export type JobKind =
   | 'RECONSTRUCTION' | 'REPAIR' | 'SEGMENTATION_PARTS' | 'SEGMENTATION_FACADE'
-  | 'CAD_BUILD' | 'CAD_ASSEMBLE';
+  | 'CAD_BUILD' | 'CAD_ASSEMBLE' | 'MESH_IMPORT';
 
 export type PrintQuaternion = [number, number, number, number];
 
@@ -415,6 +415,19 @@ export class ApiService {
 
   launchReconstruction(projectId: number, preset: Preset): Observable<Job> {
     return this.http.post<Job>(`${this.base}/api/projects/${projectId}/reconstruct/`, { preset });
+  }
+
+  /**
+   * Mode « Photos client » : importe le maillage produit par le client avec
+   * son propre logiciel de photogrammétrie — `files` doit contenir exactement
+   * un fichier principal (.obj/.ply/.stl/.glb/.gltf), plus ses éventuels
+   * compagnons (.mtl/texture/.bin) dans le même envoi. Asynchrone (Job), comme
+   * launchReconstruction/launchCadBuild — pas un simple upload.
+   */
+  uploadMeshImport(projectId: number, files: File[]): Observable<Job> {
+    const form = new FormData();
+    for (const f of files) form.append('files', f);
+    return this.http.post<Job>(`${this.base}/api/projects/${projectId}/mesh-import/`, form);
   }
 
   getJob(id: number): Observable<Job> {

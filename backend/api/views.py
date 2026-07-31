@@ -28,6 +28,7 @@ from .serializers import (
 )
 from .tasks import (
     run_reconstruction, run_repair, run_facade_segmentation, run_cad_build, run_cad_assemble,
+    run_mesh_import,
 )
 
 
@@ -379,6 +380,84 @@ class ReconstructionLaunchView(APIView):
                 owner_email=getattr(request.user, 'email', ''),
             )
             transaction.on_commit(lambda: run_reconstruction.delay(job.id))
+
+        return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
+
+
+class MeshImportLaunchView(APIView):
+    """
+    POST /api/projects/<id>/mesh-import/ — mode d'initialisation « Photos
+    client » : importe un maillage déjà reconstruit par le client avec son
+    propre logiciel de photogrammétrie (Meshroom, RealityScan, 3DF Zephyr…),
+    converti ensuite vers le format pivot PLY + glTF exactement comme les
+    4 autres pipelines (cf. tasks.run_mesh_import / _save_mesh_result). Les
+    photos sources se déposent séparément, par le même endpoint que le mode
+    Photo (POST /api/projects/<id>/photos/, cf. PhotoUploadView) — aucune
+    association supplémentaire nécessaire, elles rejoignent simplement
+    project.photos comme n'importe quelle autre photo du projet.
+
+    Body : `files` (un ou plusieurs) — exactement UN fichier « principal »
+    (.obj/.ply/.stl/.glb/.gltf), plus ses éventuels compagnons requis par le
+    format (.mtl et textures pour un OBJ, .bin et textures pour un glTF non
+    binaire). Les fichiers sont écrits tels quels dans le répertoire de
+    travail du job (pas de sous-dossier) : un OBJ/glTF qui référence son .mtl/
+    .bin/texture par simple nom de fichier relatif continue de le résoudre
+    correctement une fois trimesh chargé côté tâche Celery.
+
+    Même verrou global que les autres jobs lourds : la conversion d'un
+    maillage dense (plusieurs centaines de milliers de faces, texture haute
+    résolution) peut prendre de quelques secondes à quelques minutes — pas
+    question de la laisser tourner en même temps qu'une reconstruction CPU.
+    """
+
+    PRIMARY_EXTENSIONS = {'.obj', '.ply', '.stl', '.glb', '.gltf'}
+    COMPANION_EXTENSIONS = {'.mtl', '.bin', '.jpg', '.jpeg', '.png'}
+    ALLOWED_EXTENSIONS = PRIMARY_EXTENSIONS | COMPANION_EXTENSIONS
+
+    def post(self, request, pk):
+        project = permissions.get_editable_project(request, pk)
+        files = request.FILES.getlist('files')
+        if not files:
+            return Response({'detail': "Aucun fichier reçu (champ 'files')."},
+                             status=status.HTTP_400_BAD_REQUEST)
+
+        names = [Path(f.name).name for f in files]
+        unsupported = [n for n in names if Path(n).suffix.lower() not in self.ALLOWED_EXTENSIONS]
+        if unsupported:
+            return Response(
+                {'detail': f"Format(s) non pris en charge : {', '.join(unsupported)} "
+                           "(attendus : .obj/.ply/.stl/.glb/.gltf, éventuellement accompagnés "
+                           "de .mtl/.bin/.jpg/.jpeg/.png)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        primaries = [f for f in files if Path(f.name).suffix.lower() in self.PRIMARY_EXTENSIONS]
+        if len(primaries) != 1:
+            return Response(
+                {'detail': "Exactement un fichier principal attendu (.obj/.ply/.stl/.glb/.gltf) — "
+                           "ses éventuels compagnons (.mtl, textures, .bin) peuvent l'accompagner "
+                           "dans le même envoi."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            if Job.objects.select_for_update().filter(status__in=[Job.PENDING, Job.RUNNING]).exists():
+                return Response(
+                    {'detail': "Un job lourd est déjà en cours pour l'atelier — un seul à la fois, "
+                               "tous modules confondus. Réessayer une fois celui-ci terminé."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            job = Job.objects.create(
+                project=project, kind=Job.MESH_IMPORT, status=Job.PENDING,
+                params={'primary_filename': primaries[0].name},
+                owner_email=getattr(request.user, 'email', ''),
+            )
+            workdir = storage_backend.scratch_dir('projects', str(project.id), f'work_{job.id}')
+            for f in files:
+                dest = workdir / Path(f.name).name
+                with open(dest, 'wb') as fh:
+                    for chunk in f.chunks():
+                        fh.write(chunk)
+            transaction.on_commit(lambda: run_mesh_import.delay(job.id))
 
         return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 

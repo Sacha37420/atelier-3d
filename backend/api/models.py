@@ -253,6 +253,13 @@ class Job(models.Model):
     SEGMENTATION_FACADE = 'SEGMENTATION_FACADE'
     CAD_BUILD = 'CAD_BUILD'
     CAD_ASSEMBLE = 'CAD_ASSEMBLE'
+    # Mode d'initialisation « Photos client » : conversion d'un maillage déjà
+    # reconstruit par le client avec son propre logiciel de photogrammétrie
+    # (Meshroom/RealityScan/3DF Zephyr…) vers le format pivot, cf.
+    # MeshImportLaunchView/tasks.run_mesh_import. Les photos sources, elles,
+    # passent par le même endpoint que le mode Photo (PhotoUploadView) — rien
+    # de spécifique à créer pour elles.
+    MESH_IMPORT = 'MESH_IMPORT'
     KIND_CHOICES = [
         (RECONSTRUCTION, 'Reconstruction'),
         (REPAIR, 'Réparation impression'),
@@ -260,6 +267,7 @@ class Job(models.Model):
         (SEGMENTATION_FACADE, 'Segmentation bâtiment'),
         (CAD_BUILD, 'Construction CAO'),
         (CAD_ASSEMBLE, 'Assemblage CAO'),
+        (MESH_IMPORT, 'Import maillage client'),
     ]
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='jobs')

@@ -96,6 +96,56 @@
 
   &:hover { opacity: 0.85; }
   &:disabled { opacity: 0.5; cursor: not-allowed; }
+  // .btn-primary est aussi posé sur un <label> (déclencheur d'un <input
+  // type="file" hidden>, cf. bloc « Import du résultat ») — un <label> n'a
+  // pas de pseudo-classe :disabled, d'où ce modificateur de classe équivalent.
+  &.disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
+// ── Photos client : guides logiciels (accordéons natifs) ────────────────────
+.software-guide {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+
+  & + & { margin-top: var(--space-3); }
+
+  summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text);
+    padding: var(--space-2) 0;
+
+    &:hover { color: var(--accent); }
+  }
+
+  &[open] summary { margin-bottom: var(--space-2); }
+}
+
+.guide-body {
+  color: var(--text-mute);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+
+  p { margin: var(--space-2) 0; }
+
+  ol {
+    margin: var(--space-2) 0 var(--space-2) var(--space-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1px 5px;
+  }
+
+  strong { color: var(--text); }
 }
 
 .photo-grid {

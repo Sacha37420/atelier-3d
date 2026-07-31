@@ -14,18 +14,19 @@ import { MeshViewerComponent } from '../../components/mesh-viewer/mesh-viewer.co
 const POLL_INTERVAL_MS = 2000;
 const PRESET_LABELS: Record<Preset, string> = { rapide: 'Rapide', equilibre: 'Équilibré', precis: 'Précis' };
 
-export type InitMode = 'photos' | 'cao';
+export type InitMode = 'photos' | 'cao' | 'photos_client';
 
 /**
  * Page Projet (Lot 1 + Lot 5) : un `Project` n'a qu'une seule façon de
- * démarrer réellement en cours d'usage, mais DEUX méthodes équivalentes pour
- * initialiser son maillage — photos (Reconstruction, Lot 1) ou conception CAO
- * manuelle (sketchs/opérations, Lot 5.1) — cf. to_do_3D.md : les deux
- * produisent un `Mesh` standard, ensuite utilisable à l'identique par
- * Impression/Mouvements/Bâtiments. Les deux méthodes vivent ICI, dans la
- * même page projet (choix explicite via `initMode`), plutôt que sur des
- * pages/menu séparés — elles ne sont pas deux fonctionnalités différentes,
- * juste deux façons de peupler le même `Project`/`Mesh`.
+ * démarrer réellement en cours d'usage, mais TROIS méthodes équivalentes pour
+ * initialiser son maillage — photos (Reconstruction serveur, Lot 1), photos
+ * client (photogrammétrie faite par le client avec son propre logiciel, puis
+ * import du résultat) ou conception CAO manuelle (sketchs/opérations, Lot
+ * 5.1) : les trois produisent un `Mesh` standard, ensuite utilisable à
+ * l'identique par Impression/Mouvements/Bâtiments. Les trois méthodes vivent
+ * ICI, dans la même page projet (choix explicite via `initMode`), plutôt que
+ * sur des pages/menu séparés — ce ne sont pas des fonctionnalités
+ * différentes, juste trois façons de peupler le même `Project`/`Mesh`.
  *
  * La suite du pipeline une fois un maillage obtenu (calibration, réparation,
  * orientation, export — Lot 2) vit sur sa propre page réutilisable
@@ -91,6 +92,16 @@ export class ProjectDetailComponent implements OnDestroy {
   readonly activeCadBuildJob = computed(() => {
     const job = this.activeJob();
     return job?.kind === 'CAD_BUILD' ? job : null;
+  });
+
+  readonly activeMeshImportJob = computed(() => {
+    const job = this.activeJob();
+    return job?.kind === 'MESH_IMPORT' ? job : null;
+  });
+
+  readonly lastFinishedMeshImportJob = computed(() => {
+    const jobs = this.project()?.jobs ?? [];
+    return jobs.find((j) => (j.status === 'DONE' || j.status === 'ERROR') && j.kind === 'MESH_IMPORT') ?? null;
   });
 
   readonly lastFinishedJob = computed(() => {
@@ -226,11 +237,16 @@ export class ProjectDetailComponent implements OnDestroy {
     this.api.getCadOperations(this.projectId).subscribe({
       next: (list) => {
         this.operations.set(list);
-        // Choix par défaut de l'onglet : celle des deux méthodes qui a déjà
-        // des données prend le pas — sans ça, un projet CAO déjà entamé
-        // rouvrirait toujours sur l'onglet Photos par défaut.
+        // Choix par défaut de l'onglet : celle des trois méthodes qui a déjà
+        // des données prend le pas — sans ça, un projet CAO ou Photos client
+        // déjà entamé rouvrirait toujours sur l'onglet Photos par défaut. Un
+        // job MESH_IMPORT est un signal sans ambiguïté (photo_count seul ne
+        // distingue pas Photos de Photos client, les deux modes déposent des
+        // Photo) — vérifié avant le heuristique CAO ci-dessous.
         const project = this.project();
-        if (project && project.photo_count === 0 && list.length > 0) {
+        if (project?.jobs.some((j) => j.kind === 'MESH_IMPORT')) {
+          this.initMode.set('photos_client');
+        } else if (project && project.photo_count === 0 && list.length > 0) {
           this.initMode.set('cao');
         }
       },
@@ -290,6 +306,27 @@ export class ProjectDetailComponent implements OnDestroy {
 
   deletePhoto(photoId: number): void {
     this.api.deletePhoto(this.projectId, photoId).subscribe({ next: () => this.reload() });
+  }
+
+  // ── Photos client : import du résultat d'un logiciel de photogrammétrie ──
+  readonly importingMesh = signal(false);
+
+  onMeshImportInputChange(ev: Event): void {
+    const files = Array.from((ev.target as HTMLInputElement).files ?? []);
+    (ev.target as HTMLInputElement).value = '';
+    if (!files.length) return;
+    this.importingMesh.set(true);
+    this.api.uploadMeshImport(this.projectId, files).subscribe({
+      next: (job) => { this.importingMesh.set(false); this.reload(); this.startPoll(job.id); },
+      error: (err) => {
+        this.importingMesh.set(false);
+        this.error.set(
+          err?.status === 409
+            ? "Un job lourd est déjà en cours pour l'atelier — un seul à la fois, tous modules confondus."
+            : (err?.error?.detail ?? "Échec de l'import du maillage."),
+        );
+      },
+    });
   }
 
   // ── Reconstruction : preset, estimation, lancement ─────────────────────────

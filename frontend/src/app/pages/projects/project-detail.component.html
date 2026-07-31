@@ -281,14 +281,19 @@
     <section class="card init-mode-picker">
       <h3>Méthode d'initialisation du maillage</h3>
       <p class="equivalence-note">
-        Deux méthodes strictement équivalentes pour obtenir le premier maillage de ce projet : à partir de
-        <strong>photos</strong> (reconstruction 3D) ou par <strong>conception CAO</strong> (sketchs + opérations).
-        Dans les deux cas, le résultat est un maillage utilisable ensuite exactement de la même façon
-        (Impression 3D, Mouvements, Bâtiments) — l'une peut remplacer l'autre.
+        Trois méthodes strictement équivalentes pour obtenir le premier maillage de ce projet : à partir de
+        <strong>photos</strong> (reconstruction 3D sur ce serveur), en important le résultat de
+        <strong>photos client</strong> (photogrammétrie faite par le client avec son propre logiciel), ou par
+        <strong>conception CAO</strong> (sketchs + opérations). Dans les trois cas, le résultat est un maillage
+        utilisable ensuite exactement de la même façon (Impression 3D, Mouvements, Bâtiments) — l'une peut
+        remplacer l'autre.
       </p>
       <div class="mode-toggle">
         <button type="button" class="btn-ghost" [class.active]="initMode() === 'photos'" (click)="setInitMode('photos')">
           📷 Photos
+        </button>
+        <button type="button" class="btn-ghost" [class.active]="initMode() === 'photos_client'" (click)="setInitMode('photos_client')">
+          📥 Photos client
         </button>
         <button type="button" class="btn-ghost" [class.active]="initMode() === 'cao'" (click)="setInitMode('cao')">
           📐 Conception CAO
@@ -388,6 +393,197 @@
           @if (job.kind === 'RECONSTRUCTION') {
             <p class="last-job" [class.error]="job.status === 'ERROR'">{{ job.message }}</p>
           }
+        }
+      </section>
+    }
+
+    <!-- ══════════════════════════ MÉTHODE : PHOTOS CLIENT ════════════════════ -->
+    @if (initMode() === 'photos_client') {
+      <!-- ── Logiciels de photogrammétrie ──────────────────────────────────── -->
+      <section class="card">
+        <h3>Logiciels de photogrammétrie</h3>
+        <p class="equivalence-note">
+          Trois logiciels gratuits pour reconstruire un maillage 3D à partir de vos propres photos, sur votre
+          machine. Une fois le résultat exporté (OBJ, PLY, STL ou glTF/GLB — voir « Export » dans chaque guide),
+          déposez-le ci-dessous avec les photos sources.
+        </p>
+
+        <details class="software-guide">
+          <summary>Meshroom (AliceVision) — recommandé, gratuit, open-source, Windows/Linux</summary>
+          <div class="guide-body">
+            <p>
+              Interface en graphe de nœuds (chaque étape du pipeline est visible et relançable individuellement) —
+              le plus simple à diagnostiquer si une étape échoue, et sans limite de nombre de photos.
+            </p>
+            <p><strong>Installation</strong> : archive à décompresser (aucune installation système), Windows ou
+              Linux. Un GPU NVIDIA accélère nettement le calcul (CUDA) mais n'est pas requis — fonctionne en
+              CPU seul, plus lentement.</p>
+            <p><strong>Prise de vue</strong> : 40 à 150 photos selon la taille de l'objet, recouvrement d'au moins
+              60‑70 % entre deux prises consécutives, tour complet en plusieurs hauteurs pour un objet posé,
+              éclairage diffus (éviter le plein soleil dur, les ombres portées changeantes et les reflets sur
+              surfaces brillantes/transparentes — ces trois cas font systématiquement échouer la mise en
+              correspondance).</p>
+            <p><strong>Étapes</strong> :</p>
+            <ol>
+              <li>Glisser toutes les photos dans le panneau « Images » — Meshroom construit automatiquement le
+                graphe complet (CameraInit → FeatureExtraction → ImageMatching → FeatureMatching →
+                StructureFromMotion → PrepareDenseScene → DepthMap → DepthMapFilter → Meshing → MeshFiltering →
+                Texturing).</li>
+              <li>Lancer (bouton « Start ») — surveiller le nœud <code>StructureFromMotion</code> en premier :
+                s'il ne reconstruit qu'une fraction des caméras, le recouvrement entre photos est insuffisant.</li>
+              <li>Réglages utiles si le résultat est trop lourd ou trop long à calculer : sur le nœud
+                <code>Meshing</code>, réduire <code>Max Input Points</code>/<code>Max Points</code> ; sur
+                <code>DepthMap</code>, réduire <code>Downscale</code> (2 = moitié résolution, plus rapide, moins
+                fin).</li>
+              <li>Piège fréquent : un fond très texturé (mur à motifs, herbe) derrière l'objet se retrouve
+                reconstruit avec lui — masquer le fond après coup dans un logiciel de retouche mesh, ou reprendre
+                les photos sur fond neutre.</li>
+            </ol>
+            <p><strong>Export</strong> : nœud <code>Texturing</code> → clic droit → « Open Folder » : le
+              <code>.obj</code> (+ <code>.mtl</code> + textures <code>.png</code>) y est déjà généré — c'est ce
+              dossier complet (les 3 types de fichiers) qu'il faut déposer ci-dessous.</p>
+          </div>
+        </details>
+
+        <details class="software-guide">
+          <summary>RealityScan (Epic Games / Capturing Reality) — gratuit selon usage, Windows</summary>
+          <div class="guide-body">
+            <p>
+              Le plus rapide et le plus robuste des trois sur un jeu de photos difficile (faible recouvrement,
+              objets réfléchissants) — qualité professionnelle. Gratuit pour un usage non commercial ou sous un
+              certain seuil de revenus selon la licence Epic Games en vigueur : à vérifier sur le site officiel
+              avant un usage commercial du résultat.</p>
+            <p><strong>Installation</strong> : nécessite un compte Epic Games, Windows uniquement, GPU NVIDIA
+              recommandé (calcul accéléré) mais pas strictement obligatoire.</p>
+            <p><strong>Prise de vue</strong> : plus tolérant que Meshroom sur le recouvrement (peut combler des
+              trous par interpolation), mais la qualité en pâtit — viser les mêmes 60‑70 % de recouvrement pour un
+              résultat exploitable en impression/usinage.</p>
+            <p><strong>Étapes</strong> :</p>
+            <ol>
+              <li>« Add Imagery » → glisser le dossier de photos → « Align Images » (alignement des caméras,
+                équivalent du SfM).</li>
+              <li>Vérifier dans la vue 3D que toutes les caméras (petits repères) sont bien positionnées autour de
+                l'objet — une caméra isolée ou mal placée signale une photo mal reconnue, à exclure avant de
+                continuer.</li>
+              <li>« Calculate Model » — choisir la qualité (« Preview » pour un aperçu rapide, « Normal » ou
+                « High » pour un maillage final ; « High » est nettement plus long et plus lourd, à réserver au
+                rendu final).</li>
+              <li>« Reconstruction Region » : recadrer la boîte englobante avant le calcul final pour exclure le
+                sol/l'environnement autour de l'objet — sinon la texture/topologie du décor pollue le maillage.</li>
+              <li>« Simplify » (optionnel) pour réduire le nombre de triangles avant export si le maillage brut
+                dépasse plusieurs millions de faces — l'application peut réappliquer sa propre réduction ensuite
+                (module Impression), mais partir d'un fichier plus léger accélère l'import.</li>
+              <li>« Colorize » puis « Texture » pour la texture avant export.</li>
+            </ol>
+            <p><strong>Export</strong> : onglet « Export » → « Model » → format <code>.obj</code> (avec texture)
+              ou <code>.glb</code> (autoporteur, un seul fichier — le plus simple à déposer ici).</p>
+          </div>
+        </details>
+
+        <details class="software-guide">
+          <summary>3DF Zephyr (édition Free) — gratuit jusqu'à 50 photos, Windows</summary>
+          <div class="guide-body">
+            <p>
+              Le plus accessible pour un premier essai : interface guidée par onglets numérotés (1 à 5), pas de
+              graphe à comprendre. La limite de 50 photos de l'édition gratuite convient à un petit objet, pas à un
+              bâtiment entier.</p>
+            <p><strong>Installation</strong> : installeur classique, Windows uniquement, inscription gratuite
+              requise pour la licence Free.</p>
+            <p><strong>Prise de vue</strong> : avec seulement 50 photos disponibles, chaque prise compte —
+              planifier un tour en 2 hauteurs (≈20‑25 photos par hauteur pour un objet de taille moyenne) plutôt que
+              de photographier au hasard, recouvrement 60‑70 % comme les deux autres logiciels.</p>
+            <p><strong>Étapes</strong> (onglets dans l'ordre) :</p>
+            <ol>
+              <li><strong>1. Photos</strong> : importer le dossier de photos.</li>
+              <li><strong>2. Sparse/caméras</strong> : « Start Processing » lance l'alignement — vérifier le
+                nombre de photos effectivement enregistrées (affiché après calcul) : en dessous de 80‑90 % des
+                photos importées, reprendre des vues intermédiaires aux endroits manquants plutôt que de continuer
+                avec un nuage clairsemé.</li>
+              <li><strong>3. Dense</strong> : génère le nuage de points dense — le réglage « Detail » (Low/Medium/
+                High) est le principal levier temps/qualité, Medium suffit pour la plupart des objets.</li>
+              <li><strong>4. Mesh</strong> : « Generate Mesh » — activer « Watertight » si le résultat doit être
+                imprimable sans réparation manuelle ensuite (sinon laissé au module Réparation de cette
+                application).</li>
+              <li><strong>5. Texture</strong> : « Generate Texture » avant export — sans cette étape, l'export ne
+                contient qu'un maillage gris uni.</li>
+            </ol>
+            <p><strong>Export</strong> : menu « Export » → « Export Mesh » → format <code>.obj</code> (+
+              <code>.mtl</code> + texture) ou <code>.ply</code> (sans texture, uniquement si la couleur n'est pas
+              nécessaire).</p>
+          </div>
+        </details>
+      </section>
+
+      <!-- ── Dépôt des photos sources (identique au mode Photos) ───────────── -->
+      <section class="card">
+        <h3>Photos sources</h3>
+        <div
+          class="dropzone"
+          [class.dragover]="dragOver()"
+          (dragover)="onDragOver($event)"
+          (dragleave)="onDragLeave()"
+          (drop)="onDrop($event)"
+        >
+          @if (uploading()) {
+            <p>Envoi en cours…</p>
+          } @else {
+            <p>Glisser-déposer les photos ayant servi à la reconstruction, ou une vidéo</p>
+            <div class="dropzone-actions">
+              <label class="btn-ghost">
+                Choisir des photos…
+                <input type="file" accept="image/*" multiple (change)="onPhotoInputChange($event)" hidden />
+              </label>
+              <label class="btn-ghost">
+                Choisir une vidéo…
+                <input type="file" accept="video/*" (change)="onVideoInputChange($event)" hidden />
+              </label>
+            </div>
+          }
+        </div>
+
+        @if (project.photos.length > 0) {
+          <div class="photo-grid">
+            @for (photo of project.photos; track photo.id) {
+              <div class="thumb">
+                <img [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
+                <button type="button" class="thumb-remove" (click)="deletePhoto(photo.id)" title="Retirer">✕</button>
+              </div>
+            }
+          </div>
+        }
+      </section>
+
+      <!-- ── Import du résultat ────────────────────────────────────────────── -->
+      <section class="card">
+        <h3>Import du résultat</h3>
+        <p class="hint">
+          Un fichier principal (.obj/.ply/.stl/.glb/.gltf) — et, pour un .obj ou un .gltf non-binaire, ses
+          fichiers compagnons (.mtl, textures .jpg/.png, .bin) sélectionnés en même temps.
+        </p>
+
+        @if (activeMeshImportJob(); as job) {
+          <div class="job-progress">
+            <div class="bar"><div class="fill" [style.width.%]="job.progress"></div></div>
+            <p class="job-message">{{ job.message || 'En cours…' }} ({{ job.progress }}%)</p>
+          </div>
+        } @else if (activeJob(); as job) {
+          <p class="hint">Un autre job lourd est en cours pour l'atelier — un seul à la fois, tous modules confondus.</p>
+        } @else {
+          <label class="btn-primary" [class.disabled]="importingMesh()">
+            {{ importingMesh() ? 'Import en cours…' : 'Choisir le(s) fichier(s) du résultat…' }}
+            <input
+              type="file"
+              multiple
+              accept=".obj,.mtl,.ply,.stl,.glb,.gltf,.bin,.jpg,.jpeg,.png"
+              (change)="onMeshImportInputChange($event)"
+              [disabled]="importingMesh()"
+              hidden
+            />
+          </label>
+        }
+
+        @if (lastFinishedMeshImportJob(); as job) {
+          <p class="last-job" [class.error]="job.status === 'ERROR'">{{ job.message }}</p>
         }
       </section>
     }

@@ -280,6 +280,96 @@ def run_reconstruction(self, job_id: int):
 
 
 @shared_task(bind=True)
+def run_mesh_import(self, job_id: int):
+    """
+    Job MESH_IMPORT (mode d'initialisation « Photos client ») : convertit un
+    maillage déjà reconstruit par le client avec son propre logiciel de
+    photogrammétrie vers le format pivot PLY + glTF, exactement comme les 4
+    autres pipelines (cf. _save_mesh_result) — seule l'origine du maillage
+    change, pas son traitement une fois obtenu. Le(s) fichier(s) uploadé(s)
+    (fichier principal + éventuels compagnons .mtl/texture/.bin) ont déjà été
+    écrits dans le répertoire de travail par MeshImportLaunchView (cf.
+    api/views.py), avant même la création de ce job Celery — rien à
+    télécharger depuis storage ici.
+
+    `trimesh.load()` d'un OBJ multi-groupes ou d'un glTF renvoie une `Scene`
+    (plusieurs géométries nommées), pas un `Trimesh` unique — à la différence
+    des 4 autres pipelines qui ne manipulent qu'un maillage déjà fusionné.
+    Fusionné ici via `Scene.dump(concatenate=True)` : le reste de l'app (Part.
+    face_ids, SemanticClass.face_ids, mesh-viewer raycast) suppose partout un
+    unique Trimesh dont l'ordre des faces à l'export GLB fait référence (cf.
+    api/models.py, commentaire de Part.face_ids) — une Scene à plusieurs noeuds
+    casserait cette invariance.
+    """
+    job = Job.objects.select_related('project').get(pk=job_id)
+    job.celery_task_id = self.request.id
+    job.save(update_fields=['celery_task_id'])
+
+    project = job.project
+    start = time.monotonic()
+    try:
+        job.set_state(status=Job.RUNNING, progress=10, message="Chargement du maillage importé…")
+        workdir = storage_backend.scratch_dir('projects', str(project.id), f'work_{job.id}')
+        primary_name = job.params.get('primary_filename')
+        primary_path = workdir / primary_name if primary_name else None
+        if not primary_path or not primary_path.exists():
+            raise ReconstructionError(
+                "Fichier principal introuvable dans le répertoire de travail du job."
+            )
+
+        job.set_state(progress=30, message="Lecture du maillage (trimesh)…")
+        geom = trimesh.load(str(primary_path), process=False, force='mesh')
+        if isinstance(geom, trimesh.Scene):
+            geom = trimesh.util.concatenate(geom.dump())
+        if not hasattr(geom, 'vertices') or len(geom.vertices) == 0:
+            raise ReconstructionError(
+                "Le fichier importé ne contient aucune géométrie exploitable."
+            )
+
+        job.set_state(progress=70, message="Export du résultat…")
+        version = (project.meshes.aggregate(v=Max('version'))['v'] or 0) + 1
+        mesh = Mesh(project=project, job=job, version=version, is_watertight=bool(geom.is_watertight))
+
+        ply_path = workdir / f'import_v{version}.ply'
+        geom.export(str(ply_path))
+        with open(ply_path, 'rb') as fh:
+            mesh.file.save(f'import_v{version}.ply', File(fh), save=False)
+
+        # Export glTF pour le viewer three.js — best-effort comme pour les
+        # autres jobs (cf. _save_mesh_result) : le PLY reste exploitable même
+        # si cet export échoue (ex. texture référencée introuvable).
+        try:
+            gltf_path = workdir / f'import_v{version}.glb'
+            geom.export(str(gltf_path))
+            with open(gltf_path, 'rb') as fh:
+                mesh.gltf_file.save(f'import_v{version}.glb', File(fh), save=False)
+        except Exception:
+            pass
+
+        mesh.vertex_count = len(geom.vertices)
+        mesh.face_count = len(geom.faces)
+        mesh.save()
+
+        elapsed = time.monotonic() - start
+        job.duration_seconds = elapsed
+        job.save(update_fields=['duration_seconds'])
+        scale_warning = (
+            "" if project.has_scale else
+            " Échelle non calibrée : le maillage est à une échelle arbitraire "
+            "(bloquant pour l'impression 3D — Lot 2)."
+        )
+        job.set_state(
+            status=Job.DONE, progress=100,
+            message=(
+                f"Import terminé : {mesh.vertex_count or '?'} sommets / {mesh.face_count or '?'} faces, "
+                f"calculé en {int(elapsed // 60)}m{int(elapsed % 60):02d}s.{scale_warning}"
+            ),
+        )
+    except Exception as exc:
+        job.set_state(status=Job.ERROR, message=str(exc))
+
+
+@shared_task(bind=True)
 def run_repair(self, job_id: int):
     """
     Job REPAIR (Lot 2, module Impression 3D) : réparation watertight + décimation

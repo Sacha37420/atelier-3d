@@ -176,7 +176,7 @@ app-mesh-viewer { display: block; height: 480px; }
   padding: 2px 6px;
   border-radius: var(--radius-full);
   background: rgba(0, 0, 0, 0.6);
-  color: #fff;
+  color: var(--on-solid);
   font-size: 10px;
 }
 

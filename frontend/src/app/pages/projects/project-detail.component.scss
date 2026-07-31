@@ -125,7 +125,7 @@
   border: none;
   border-radius: var(--radius-full);
   background: rgba(0, 0, 0, 0.6);
-  color: #fff;
+  color: var(--on-solid);
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
@@ -194,6 +194,33 @@
 
     span { word-break: break-word; }
   }
+}
+
+// ── Lot 5.2 — avertissement de re-pointage (Mesh périmé) ────────────────────
+.badge-outdated {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 2px var(--space-2);
+  background: var(--warning-tint);
+  color: var(--warning);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+}
+
+.instance-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.outdated-warning {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--warning-tint);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+
+  ul { margin: var(--space-2) 0; padding-left: var(--space-4); }
 }
 
 .sub-form {

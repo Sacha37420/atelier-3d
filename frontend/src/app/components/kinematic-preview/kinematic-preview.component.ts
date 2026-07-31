@@ -83,6 +83,8 @@ export class KinematicPreviewComponent implements AfterViewInit, OnChanges, OnDe
   }
 
   private initScene(): void {
+    // Couleurs de rendu three.js (surface WebGL, pas chrome DOM) — même
+    // exception que dans mesh-viewer.component.ts : hors charte Foyer à dessein.
     const host = this.canvasHost.nativeElement;
     this.scene.background = new THREE.Color(0x14171f);
     this.scene.add(this.root);

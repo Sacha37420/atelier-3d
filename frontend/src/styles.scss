@@ -36,6 +36,10 @@
   --sidebar-w: 240px;
   --sidebar-w-collapsed: 76px;
   color-scheme: light;
+
+  /* Texte clair fixe pour poser sur un aplat sombre (badge/bouton sur
+     vignette photo) — ne s'inverse jamais avec le thème. */
+  --on-solid: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {

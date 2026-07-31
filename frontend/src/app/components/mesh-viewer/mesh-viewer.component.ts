@@ -37,6 +37,11 @@ export interface VisibilityPart {
 }
 
 const BRUSH_RADIUS_RATIOS = [0.01, 0.02, 0.035, 0.06, 0.1];
+// Couleurs de rendu three.js (surface WebGL, pas chrome DOM) volontairement
+// hors charte Foyer — background/éclairage/marqueurs de la scène 3D doivent
+// rester lisibles indépendamment du thème clair/sombre de l'app, comme dans
+// tout viewer 3D (Blender, CAO…). Ne pas les faire pointer vers des tokens
+// --accent/--bg : elles ne représentent aucune surface UI.
 const PAINT_BASE_COLOR = new THREE.Color(0xb0b0b0);
 const PAINT_HIGHLIGHT_COLOR = new THREE.Color(0xff8c1a);
 

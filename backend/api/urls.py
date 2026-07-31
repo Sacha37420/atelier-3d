@@ -16,6 +16,7 @@ from .views import (
     CadAssemblyInstanceListCreateView, CadAssemblyInstanceDetailView,
     CadAssemblyConstraintListCreateView, CadAssemblyConstraintDetailView,
     CadAssembleLaunchView,
+    PublicAssemblyListView, PublicAssemblyDetailView, PublicAssemblyMeshFileView,
 )
 
 urlpatterns = [
@@ -66,4 +67,9 @@ urlpatterns = [
     path('projects/<int:pk>/cad-constraints/', CadAssemblyConstraintListCreateView.as_view()),
     path('cad-constraints/<int:pk>/',          CadAssemblyConstraintDetailView.as_view()),
     path('projects/<int:pk>/cad-assemble/',    CadAssembleLaunchView.as_view()),
+
+    # Lot 5.3 — API publique, sans authentification (cf. to_do_3D.md, exception actée)
+    path('public/assemblies/',                    PublicAssemblyListView.as_view()),
+    path('public/assemblies/<int:pk>/',           PublicAssemblyDetailView.as_view()),
+    path('public/assemblies/<int:pk>/<str:fmt>/', PublicAssemblyMeshFileView.as_view()),
 ]

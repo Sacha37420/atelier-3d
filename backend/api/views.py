@@ -8,7 +8,8 @@ from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.text import get_valid_filename
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework import generics, status
 from rest_framework.exceptions import APIException
 from rest_framework.response import Response
@@ -23,7 +24,7 @@ from .serializers import (
     ProjectSerializer, ProjectDetailSerializer, ProjectShareSerializer, PhotoSerializer, JobSerializer,
     PartSerializer, JointSerializer, PhotoLabelSerializer, SemanticClassSerializer,
     CadSketchSerializer, CadOperationSerializer,
-    CadAssemblyInstanceSerializer, CadAssemblyConstraintSerializer,
+    CadAssemblyInstanceSerializer, CadAssemblyConstraintSerializer, PublicAssemblySerializer,
 )
 from .tasks import (
     run_reconstruction, run_repair, run_facade_segmentation, run_cad_build, run_cad_assemble,
@@ -1162,13 +1163,49 @@ class CadAssemblyInstanceListCreateView(APIView):
 
 
 class CadAssemblyInstanceDetailView(APIView):
-    """DELETE /api/cad-instances/<id>/"""
+    """
+    DELETE /api/cad-instances/<id>/
+    PATCH  /api/cad-instances/<id>/ — re-pointage EXPLICITE vers un autre
+    `Mesh` du même `source_project` (typiquement sa dernière version, cf.
+    to_do_3D.md limite topologique n°2). Body : {'source_mesh': <id>}. C'est
+    cette action précise — pas une invalidation spontanée — qui doit avertir :
+    les `CadAssemblyConstraint` déjà posées sur cette instance référencent des
+    faces/arêtes par index du STEP précédent, qui peuvent ne plus désigner la
+    même géométrie une fois la sous-partie régénérée. Réinitialise `placement`
+    (une nouvelle résolution est nécessaire) et fait repasser l'assemblage en
+    DRAFT.
+    """
 
     def delete(self, request, pk):
         instance = get_object_or_404(CadAssemblyInstance, pk=pk)
         permissions.check_write(instance.assembly_project, request)
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def patch(self, request, pk):
+        instance = get_object_or_404(CadAssemblyInstance, pk=pk)
+        permissions.check_write(instance.assembly_project, request)
+        new_mesh_id = request.data.get('source_mesh')
+        if not new_mesh_id:
+            return Response({'detail': "'source_mesh' requis."}, status=status.HTTP_400_BAD_REQUEST)
+        new_mesh = get_object_or_404(Mesh, pk=new_mesh_id, project=instance.source_project)
+
+        has_constraints = instance.constraints_as_a.exists() or instance.constraints_as_b.exists()
+        instance.source_mesh = new_mesh
+        instance.placement = None
+        instance.save(update_fields=['source_mesh', 'placement'])
+        if instance.assembly_project.assembly_status != Project.DRAFT:
+            instance.assembly_project.assembly_status = Project.DRAFT
+            instance.assembly_project.save(update_fields=['assembly_status'])
+
+        data = CadAssemblyInstanceSerializer(instance).data
+        if has_constraints:
+            data['warning'] = (
+                "Cette instance est référencée par au moins une contrainte — ses références de "
+                "face/arête (posées sur l'ancienne version du Mesh) peuvent ne plus désigner la même "
+                "géométrie après régénération. Vérifiez-les avant de relancer la résolution."
+            )
+        return Response(data)
 
 
 class CadAssemblyConstraintListCreateView(APIView):
@@ -1207,6 +1244,13 @@ class CadAssembleLaunchView(APIView):
     les CadAssemblyConstraint du Project(ASSEMBLY) via FreeCAD headless, cf.
     cad_assemble.py et tasks.run_cad_assemble). Même verrou global que les
     autres jobs lourds.
+
+    Avant résolution (cf. to_do_3D.md, limite topologique n°2, Lot 5.2) :
+    vérifie qu'aucune CadAssemblyInstance ne pointe un Mesh plus ancien que la
+    dernière version disponible de son source_project — une sous-partie
+    reconstruite après l'ajout de son instance laisserait sinon l'assemblage se
+    résoudre silencieusement sur une géométrie périmée. Bloque (409) tant que
+    le body ne porte pas `confirm_outdated: true` explicite.
     """
 
     def post(self, request, pk):
@@ -1215,6 +1259,34 @@ class CadAssembleLaunchView(APIView):
         if not project.cad_constraints.exists():
             return Response({'detail': "Aucune contrainte posée pour cet assemblage."},
                              status=status.HTTP_400_BAD_REQUEST)
+
+        confirm_outdated = str(request.data.get('confirm_outdated', '')).lower() in ('1', 'true', 'yes')
+        if not confirm_outdated:
+            outdated = []
+            for instance in project.cad_instances.select_related('source_project', 'source_mesh'):
+                latest = instance.source_project.meshes.order_by('-version').first()
+                if latest is not None and latest.version > instance.source_mesh.version:
+                    outdated.append({
+                        'instance_id': instance.id,
+                        'label': instance.label or instance.source_project.name,
+                        'source_project': instance.source_project_id,
+                        'pinned_mesh_version': instance.source_mesh.version,
+                        'latest_mesh_version': latest.version,
+                    })
+            if outdated:
+                return Response(
+                    {
+                        'detail': (
+                            f"{len(outdated)} instance(s) pointent vers une version de Mesh plus "
+                            "ancienne que la dernière disponible pour leur sous-partie — les "
+                            "contraintes posées dessus peuvent ne plus désigner les mêmes faces/arêtes "
+                            "après régénération. Re-pointez chaque instance (PATCH /api/cad-instances/"
+                            "<id>/) ou renvoyez confirm_outdated=true pour résoudre quand même."
+                        ),
+                        'outdated_instances': outdated,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
 
         with transaction.atomic():
             if Job.objects.select_for_update().filter(status__in=[Job.PENDING, Job.RUNNING]).exists():
@@ -1230,3 +1302,82 @@ class CadAssembleLaunchView(APIView):
             transaction.on_commit(lambda: run_cad_assemble.delay(job.id))
 
         return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ATELIER 3D — Lot 5.3 : API publique (lecture seule, sans authentification)
+# ──────────────────────────────────────────────────────────────────────────────
+# Exception actée dans to_do_3D.md (section « Sécurité / cloisonnement ») : ces
+# routes précises contournent DÉLIBÉRÉMENT les deux verrous du lab (pas de flow
+# Keycloak à poser côté client, pas de contrôle azp/groups ici) — même pattern
+# que public_plat_photo (restauration/backend/api/views_public.py) et
+# l'endpoint image AllowAny de google-agenda. Strictement limitées aux
+# `Project(project_type=ASSEMBLY, assembly_status=SOLVED)` : un Project CAO
+# mono-pièce ou un assemblage encore DRAFT/ERROR n'y est jamais exposé.
+# Aucune autre route de cette app n'est concernée.
+class PublicReadThrottle(AnonRateThrottle):
+    scope = 'public'
+
+
+def _public_assembly_queryset():
+    return Project.objects.filter(
+        project_type=Project.ASSEMBLY, assembly_status=Project.SOLVED, parent_project__isnull=True,
+    )
+
+
+class PublicAssemblyListView(generics.ListAPIView):
+    """GET /api/public/assemblies/ — liste des assemblages résolus, publique."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [PublicReadThrottle]
+    serializer_class = PublicAssemblySerializer
+    queryset = _public_assembly_queryset()
+
+
+class PublicAssemblyDetailView(generics.RetrieveAPIView):
+    """GET /api/public/assemblies/<id>/ — détail d'un assemblage résolu, public."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [PublicReadThrottle]
+    serializer_class = PublicAssemblySerializer
+    queryset = _public_assembly_queryset()
+
+
+class PublicAssemblyMeshFileView(APIView):
+    """
+    GET /api/public/assemblies/<id>/gltf/ — glTF du Mesh le plus récent (visualisation).
+    GET /api/public/assemblies/<id>/step/ — STEP du Mesh le plus récent (réutilisation exacte).
+
+    Proxie l'API storage via le compte de service de cette app (même transport
+    que MediaView, cf. plus haut) : storage n'a lui-même aucun chemin de
+    lecture anonyme, c'est cette vue qui décide délibérément de republier ces
+    octets à tout visiteur, une fois le filtre ASSEMBLY/SOLVED déjà passé par
+    _public_assembly_queryset().
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [PublicReadThrottle]
+
+    def get(self, request, pk, fmt):
+        if fmt not in ('gltf', 'step'):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        project = get_object_or_404(_public_assembly_queryset(), pk=pk)
+        mesh = project.meshes.order_by('-version').first()
+        if mesh is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        field = mesh.gltf_file if fmt == 'gltf' else mesh.step_file
+        if not field:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        try:
+            upstream = storage_client.download(field.name, namespace=storage_backend.namespace_for_path(field.name))
+        except FileNotFoundError:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        except storage_client.StorageClientError as exc:
+            return Response({'detail': f'Stockage indisponible : {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+        return StreamingHttpResponse(
+            upstream.iter_content(chunk_size=65536),
+            content_type=upstream.headers.get('Content-Type', 'application/octet-stream'),
+        )

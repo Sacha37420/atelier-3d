@@ -7,6 +7,7 @@ import {
   CadSketch, CadPlane, CadEntity, CadEntityType,
   CadOperation, CadOperationType, CAD_OPERATION_LABELS,
   Project, CadAssemblyInstance, CadAssemblyConstraint, ConstraintType, CONSTRAINT_TYPE_LABELS,
+  OutdatedInstanceInfo,
 } from '../../core/api.service';
 import { MeshViewerComponent } from '../../components/mesh-viewer/mesh-viewer.component';
 
@@ -171,6 +172,10 @@ export class ProjectDetailComponent implements OnDestroy {
   };
 
   readonly assembling = signal(false);
+  // Lot 5.2 — instances détectées comme périmées (source_mesh plus ancien que
+  // la dernière version disponible de leur source_project) lors du dernier
+  // essai de résolution refusé (409) : cf. launchAssemble()/resolveAnyway().
+  readonly outdatedInstances = signal<OutdatedInstanceInfo[]>([]);
 
   readonly activeAssembleJob = computed(() => {
     const job = this.activeJob();
@@ -571,6 +576,28 @@ export class ProjectDetailComponent implements OnDestroy {
     this.api.deleteCadInstance(id).subscribe({ next: () => this.reloadAssembly() });
   }
 
+  /** Lot 5.2 — re-pointage explicite vers la dernière version du Mesh de la
+   * sous-partie source (cf. CadAssemblyInstance.is_outdated). Avertit avant
+   * d'agir : les contraintes déjà posées sur cette instance référencent des
+   * faces/arêtes par index de l'ancien STEP, qui peuvent ne plus désigner la
+   * même géométrie une fois la sous-partie régénérée (limite topologique n°2,
+   * cf. to_do_3D.md). */
+  repointInstanceToLatest(inst: CadAssemblyInstance): void {
+    if (inst.latest_mesh_id === null) return;
+    const confirmed = window.confirm(
+      `Repointer « ${inst.label || this.subPartName(inst.source_project)} » vers la version `
+      + `${inst.latest_mesh_version} (actuellement v${inst.source_mesh_version}) ?\n\n`
+      + "Les contraintes déjà posées sur cette instance référencent des faces/arêtes de l'ancienne "
+      + 'version — elles peuvent ne plus désigner la même géométrie après ce changement. '
+      + 'Vérifiez-les une fois le repointage effectué.',
+    );
+    if (!confirmed) return;
+    this.api.repointCadInstance(inst.id, inst.latest_mesh_id).subscribe({
+      next: () => this.reloadAssembly(),
+      error: (err) => { this.error.set(err?.error?.detail ?? 'Échec du repointage.'); },
+    });
+  }
+
   // ── Assemblage : contraintes ──────────────────────────────────────────────
   toggleAddConstraint(): void {
     this.addingConstraint.update((v) => !v);
@@ -615,8 +642,32 @@ export class ProjectDetailComponent implements OnDestroy {
 
   // ── Assemblage : résolution (Job CAD_ASSEMBLE) ───────────────────────────
   launchAssemble(): void {
+    this.outdatedInstances.set([]);
     this.assembling.set(true);
     this.api.launchCadAssemble(this.projectId).subscribe({
+      next: (job) => { this.assembling.set(false); this.reload(); this.startPoll(job.id); },
+      error: (err) => {
+        this.assembling.set(false);
+        if (err?.status === 409 && err?.error?.outdated_instances?.length) {
+          // Limite topologique n°2 (to_do_3D.md) : au moins une instance pointe
+          // un Mesh plus ancien que la dernière version de sa sous-partie —
+          // avertir plutôt que résoudre silencieusement sur une géométrie périmée.
+          this.outdatedInstances.set(err.error.outdated_instances);
+          this.error.set(err.error.detail);
+        } else if (err?.status === 409) {
+          this.error.set("Un job lourd est déjà en cours pour l'atelier — un seul à la fois, tous modules confondus.");
+        } else {
+          this.error.set(err?.error?.detail ?? "Échec du lancement de l'assemblage.");
+        }
+      },
+    });
+  }
+
+  /** Résout quand même malgré les instances périmées signalées par launchAssemble(). */
+  resolveAssembleAnyway(): void {
+    this.outdatedInstances.set([]);
+    this.assembling.set(true);
+    this.api.launchCadAssemble(this.projectId, { confirm_outdated: true }).subscribe({
       next: (job) => { this.assembling.set(false); this.reload(); this.startPoll(job.id); },
       error: (err) => {
         this.assembling.set(false);

@@ -170,11 +170,38 @@ class CadOperationSerializer(serializers.ModelSerializer):
 
 
 class CadAssemblyInstanceSerializer(serializers.ModelSerializer):
+    # Limite topologique n°2 (cf. to_do_3D.md) : source_mesh est pinné à la
+    # création, mais rien n'empêchait jusqu'ici qu'un Mesh plus récent existe
+    # déjà pour source_project (la sous-partie a été reconstruite après coup)
+    # sans que l'instance ni l'utilisateur n'en soient jamais informés.
+    # is_outdated/latest_mesh_version exposent cette dérive au frontend (badge
+    # + action de re-pointage) ; CadAssembleLaunchView refait le même calcul
+    # côté serveur pour bloquer une résolution silencieuse (cf. views.py).
+    source_mesh_version = serializers.IntegerField(source='source_mesh.version', read_only=True)
+    latest_mesh_id = serializers.SerializerMethodField()
+    latest_mesh_version = serializers.SerializerMethodField()
+    is_outdated = serializers.SerializerMethodField()
+
     class Meta:
         model = CadAssemblyInstance
-        fields = ['id', 'assembly_project', 'source_project', 'source_mesh',
-                  'label', 'placement', 'created_at']
+        fields = ['id', 'assembly_project', 'source_project', 'source_mesh', 'source_mesh_version',
+                  'latest_mesh_id', 'latest_mesh_version', 'is_outdated', 'label', 'placement', 'created_at']
         read_only_fields = ['assembly_project', 'placement', 'created_at']
+
+    def _latest_mesh(self, obj: CadAssemblyInstance):
+        return obj.source_project.meshes.order_by('-version').first()
+
+    def get_latest_mesh_id(self, obj: CadAssemblyInstance):
+        latest = self._latest_mesh(obj)
+        return latest.id if latest else None
+
+    def get_latest_mesh_version(self, obj: CadAssemblyInstance):
+        latest = self._latest_mesh(obj)
+        return latest.version if latest else None
+
+    def get_is_outdated(self, obj: CadAssemblyInstance) -> bool:
+        latest = self._latest_mesh(obj)
+        return latest is not None and latest.version > obj.source_mesh.version
 
 
 class CadAssemblyConstraintSerializer(serializers.ModelSerializer):
@@ -183,3 +210,39 @@ class CadAssemblyConstraintSerializer(serializers.ModelSerializer):
         fields = ['id', 'assembly_project', 'constraint_type', 'instance_a', 'reference_a',
                   'instance_b', 'reference_b', 'params', 'created_at']
         read_only_fields = ['assembly_project', 'created_at']
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ATELIER 3D — Lot 5.3 : API publique (lecture seule, sans authentification)
+# ──────────────────────────────────────────────────────────────────────────────
+class PublicAssemblySerializer(serializers.ModelSerializer):
+    """
+    Champs volontairement réduits par rapport à ProjectSerializer — pas
+    d'owner_email/photo_count/my_role/shared_with_count (données de
+    cloisonnement interne, sans objet pour un visiteur anonyme). `latest_mesh`
+    ne pointe jamais directement un chemin storage : les URLs proxient via
+    PublicAssemblyMeshFileView (cf. api/views.py), storage n'ayant aucun
+    chemin de lecture anonyme (même raisonnement que public_plat_photo de
+    restauration).
+    """
+
+    latest_mesh = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Project
+        fields = ['id', 'name', 'description', 'assembly_status', 'latest_mesh', 'created_at', 'updated_at']
+        read_only_fields = fields
+
+    def get_latest_mesh(self, obj: Project):
+        mesh = obj.meshes.order_by('-version').first()
+        if mesh is None:
+            return None
+        return {
+            'id': mesh.id,
+            'version': mesh.version,
+            'vertex_count': mesh.vertex_count,
+            'face_count': mesh.face_count,
+            'is_watertight': mesh.is_watertight,
+            'gltf_url': f'/api/public/assemblies/{obj.id}/gltf/' if mesh.gltf_file else None,
+            'step_url': f'/api/public/assemblies/{obj.id}/step/' if mesh.step_file else None,
+        }

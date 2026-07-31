@@ -115,6 +115,12 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    # Lot 5.3 (Conception CAO) : scope 'public' utilisé par PublicReadThrottle
+    # (api/views.py) sur les seules routes /api/public/assemblies/... — même
+    # convention que restauration/backend/config/settings.py.
+    'DEFAULT_THROTTLE_RATES': {
+        'public': '60/min',
+    },
 }
 
 # ── Keycloak ───────────────────────────────────────────────────────────────────

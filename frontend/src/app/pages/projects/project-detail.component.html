@@ -93,8 +93,20 @@
                   } @else {
                     — non résolu
                   }
+                  @if (inst.is_outdated) {
+                    <span class="badge-outdated" title="La sous-partie a été reconstruite depuis l'ajout de cette instance">
+                      ⚠ périmée (v{{ inst.source_mesh_version }} → v{{ inst.latest_mesh_version }} disponible)
+                    </span>
+                  }
                 </span>
-                <button type="button" class="btn-ghost small" (click)="deleteInstance(inst.id)">Supprimer</button>
+                <span class="instance-actions">
+                  @if (inst.is_outdated) {
+                    <button type="button" class="btn-ghost small" (click)="repointInstanceToLatest(inst)">
+                      Repointer vers v{{ inst.latest_mesh_version }}
+                    </button>
+                  }
+                  <button type="button" class="btn-ghost small" (click)="deleteInstance(inst.id)">Supprimer</button>
+                </span>
               </li>
             }
           </ul>
@@ -240,6 +252,23 @@
           <button type="button" class="btn-primary" [disabled]="assembling() || cadConstraints().length === 0" (click)="launchAssemble()">
             {{ assembling() ? 'Lancement…' : "Lancer l'assemblage" }}
           </button>
+
+          @if (outdatedInstances().length > 0) {
+            <div class="outdated-warning">
+              <p>
+                {{ outdatedInstances().length }} instance(s) pointent vers une version de Mesh plus ancienne que
+                la dernière disponible pour leur sous-partie — les contraintes posées dessus peuvent ne plus
+                désigner les mêmes faces/arêtes après régénération :
+              </p>
+              <ul>
+                @for (o of outdatedInstances(); track o.instance_id) {
+                  <li>{{ o.label }} : v{{ o.pinned_mesh_version }} → v{{ o.latest_mesh_version }} disponible</li>
+                }
+              </ul>
+              <p class="hint">Repointez chaque instance ci-dessus, ou résolvez quand même en connaissance de cause :</p>
+              <button type="button" class="btn-ghost" (click)="resolveAssembleAnyway()">Résoudre quand même</button>
+            </div>
+          }
         }
 
         @if (lastFinishedAssembleJob(); as job) {

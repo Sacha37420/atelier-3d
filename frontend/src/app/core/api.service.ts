@@ -281,9 +281,25 @@ export interface CadAssemblyInstance {
   assembly_project: number;
   source_project: number;
   source_mesh: number;
+  // Lot 5.2 — limite topologique n°2 (to_do_3D.md) : source_mesh reste pinné
+  // à une version précise même si source_project a été reconstruit depuis.
+  // is_outdated/latest_mesh_version détectent cette dérive côté serveur pour
+  // afficher un avertissement plutôt que de laisser l'instance périmer en silence.
+  source_mesh_version: number;
+  latest_mesh_id: number | null;
+  latest_mesh_version: number | null;
+  is_outdated: boolean;
   label: string;
   placement: CadAssemblyPlacement | null;
   created_at: string;
+}
+
+export interface OutdatedInstanceInfo {
+  instance_id: number;
+  label: string;
+  source_project: number;
+  pinned_mesh_version: number;
+  latest_mesh_version: number;
 }
 
 export interface CadAssemblyConstraint {
@@ -567,6 +583,12 @@ export class ApiService {
     return this.http.delete<void>(`${this.base}/api/cad-instances/${id}/`);
   }
 
+  /** Lot 5.2 — re-pointage explicite vers un autre Mesh du même source_project
+   * (typiquement sa dernière version, cf. CadAssemblyInstance.is_outdated). */
+  repointCadInstance(id: number, sourceMeshId: number): Observable<CadAssemblyInstance> {
+    return this.http.patch<CadAssemblyInstance>(`${this.base}/api/cad-instances/${id}/`, { source_mesh: sourceMeshId });
+  }
+
   getCadConstraints(projectId: number): Observable<CadAssemblyConstraint[]> {
     return this.http.get<CadAssemblyConstraint[]>(`${this.base}/api/projects/${projectId}/cad-constraints/`);
   }
@@ -582,7 +604,7 @@ export class ApiService {
     return this.http.delete<void>(`${this.base}/api/cad-constraints/${id}/`);
   }
 
-  launchCadAssemble(projectId: number): Observable<Job> {
-    return this.http.post<Job>(`${this.base}/api/projects/${projectId}/cad-assemble/`, {});
+  launchCadAssemble(projectId: number, opts: { confirm_outdated?: boolean } = {}): Observable<Job> {
+    return this.http.post<Job>(`${this.base}/api/projects/${projectId}/cad-assemble/`, opts);
   }
 }

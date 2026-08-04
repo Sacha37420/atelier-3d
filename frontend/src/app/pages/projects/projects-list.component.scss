@@ -63,6 +63,7 @@
 }
 
 .card {
+  position: relative;
   display: block;
   background: var(--card);
   border: 1px solid var(--border);
@@ -74,7 +75,29 @@
 
   &:hover { border-color: var(--accent); }
 
-  h3 { margin-bottom: var(--space-3); }
+  h3 { margin-bottom: var(--space-3); padding-right: var(--space-6); }
+}
+
+// Même principe que .thumb-remove (project-detail.component.scss) : chip de
+// suppression compacte, volontairement sous 44px (superposée à une carte
+// dense, pas un contrôle de navigation principal).
+.card-remove {
+  position: absolute;
+  top: var(--space-3); right: var(--space-3);
+  width: 28px; height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--card);
+  color: var(--text-mute);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+
+  &:hover { background: var(--danger-tint); color: var(--danger); border-color: var(--danger); }
 }
 
 .badges {

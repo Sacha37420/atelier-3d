@@ -54,6 +54,7 @@
                 <a [routerLink]="['/projects', sp.id]">
                   <strong>{{ sp.name }}</strong> — {{ sp.has_mesh ? 'maillage construit' : 'pas encore construite' }}
                 </a>
+                <button type="button" class="btn-ghost small" (click)="deleteSubPart(sp.id, sp.name)">Supprimer</button>
               </li>
             }
           </ul>

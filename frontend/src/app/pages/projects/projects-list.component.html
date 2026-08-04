@@ -1,10 +1,12 @@
 <main class="page-projects">
   <h2>Projets de reconstruction</h2>
   <p class="equivalence-note">
-    Chaque projet peut être initialisé de deux façons strictement équivalentes : à partir de
-    <strong>photos</strong> ou par <strong>conception CAO</strong> (sketchs + opérations) — le choix se fait à
-    l'intérieur du projet, une fois créé. Dans les deux cas, le résultat est un maillage utilisable ensuite
-    exactement de la même façon (Impression 3D, Mouvements, Bâtiments).
+    Chaque projet peut être initialisé de trois façons strictement équivalentes : à partir de
+    <strong>photos</strong> (reconstruction sur ce serveur), en important le résultat de <strong>photos
+    client</strong> (photogrammétrie faite par le client avec son propre logiciel), ou par <strong>conception
+    CAO</strong> (sketchs + opérations) — le choix se fait à l'intérieur du projet, une fois créé. Dans les trois
+    cas, le résultat est un maillage utilisable ensuite exactement de la même façon (Impression 3D, Mouvements,
+    Bâtiments).
   </p>
 
   <form class="new-project" (ngSubmit)="createProject()">
@@ -30,6 +32,7 @@
     <div class="grid">
       @for (p of projects(); track p.id) {
         <a class="card" [routerLink]="['/projects', p.id]">
+          <button type="button" class="card-remove" (click)="deleteProject(p.id, p.name, $event)" title="Supprimer">✕</button>
           <h3>{{ p.name }}</h3>
           <div class="badges">
             <span class="badge">{{ p.project_type === 'batiment' ? 'Bâtiment' : 'Objet' }}</span>

@@ -3,7 +3,7 @@ import uuid
 from pathlib import Path
 
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, ProtectedError
 from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.text import get_valid_filename
@@ -130,15 +130,35 @@ class ProjectListCreateView(generics.ListCreateAPIView):
 
 class ProjectDetailView(generics.RetrieveUpdateAPIView):
     """
-    GET   /api/projects/<id>/ — détail complet (photos, jobs, maillages).
-          Visible au propriétaire et à tout membre d'un ProjectShare (VIEWER
-          ou EDITOR) — cf. api/permissions.py.
-    PATCH /api/projects/<id>/ — met à jour name/description/project_type, et
-          surtout `scale_meters_per_unit` (calibration d'échelle, cf. viewer
-          three.js frontend). Réservé au propriétaire et aux EDITOR.
+    GET    /api/projects/<id>/ — détail complet (photos, jobs, maillages).
+           Visible au propriétaire et à tout membre d'un ProjectShare (VIEWER
+           ou EDITOR) — cf. api/permissions.py.
+    PATCH  /api/projects/<id>/ — met à jour name/description/project_type, et
+           surtout `scale_meters_per_unit` (calibration d'échelle, cf. viewer
+           three.js frontend). Réservé au propriétaire et aux EDITOR.
+    DELETE /api/projects/<id>/ — supprime le projet ET tout ce qui en dépend
+           via CASCADE (photos, jobs, maillages, sketches/opérations CAO, et,
+           pour un Project(ASSEMBLY), ses sous-parties CAO — cf.
+           Project.parent_project) — réservé au propriétaire (même
+           prérogative que la gestion des ProjectShare, cf.
+           permissions.check_owner), qu'il s'agisse d'un projet top-level ou
+           d'une sous-partie prise individuellement (repointée sur le
+           propriétaire du projet racine, cf. check_owner/root_project).
+           Refuse (409) tant qu'un job lourd tourne pour ce projet — plutôt
+           que de laisser une tâche Celery en cours échouer en lisant des
+           fichiers qui viennent de disparaître. Refuse aussi (409, rien
+           supprimé) si un `Mesh` de ce projet (ou d'une sous-partie
+           emportée par la cascade) est encore référencé comme
+           `CadAssemblyInstance.source_mesh` par un AUTRE projet — ce FK est
+           volontairement `on_delete=PROTECT` (cf. modèle) : Django bloque
+           alors la suppression entière avant qu'elle ne commence,
+           transaction comprise. Les octets storage (photos, PLY/glTF/STEP)
+           ne sont purgés qu'une fois la suppression en base confirmée —
+           jamais avant, sous peine de perdre des fichiers d'un projet dont
+           la suppression a finalement échoué.
     """
 
-    http_method_names = ['get', 'patch', 'head', 'options']
+    http_method_names = ['get', 'patch', 'delete', 'head', 'options']
 
     def get_queryset(self):
         email = getattr(self.request.user, 'email', '')
@@ -169,6 +189,57 @@ class ProjectDetailView(generics.RetrieveUpdateAPIView):
 
     def get_serializer_class(self):
         return ProjectDetailSerializer if self.request.method == 'GET' else ProjectSerializer
+
+    def delete(self, request, pk):
+        project = get_object_or_404(Project, pk=pk)
+        permissions.check_owner(project, request)
+        if project.has_active_job:
+            return Response(
+                {'detail': "Un job est en cours pour ce projet — attendre sa fin (ou son échec) "
+                           "avant de le supprimer."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Récupérés AVANT suppression : une fois le CASCADE passé, ces lignes
+        # n'existent plus, impossible de savoir a posteriori quels fichiers
+        # storage purger. Inclut les sous-parties (Project.sub_parts) : leur
+        # CASCADE fait partie de la même suppression (cf. Project.parent_project,
+        # on_delete=CASCADE), donc leurs propres photos/maillages aussi.
+        projects_to_purge = [project, *project.sub_parts.all()]
+        photos = list(Photo.objects.filter(project__in=projects_to_purge))
+        meshes = list(Mesh.objects.filter(project__in=projects_to_purge))
+
+        try:
+            with transaction.atomic():
+                project.delete()
+        except ProtectedError:
+            return Response(
+                {'detail': "Ce projet (ou une de ses sous-parties) a un maillage encore référencé "
+                           "par un assemblage — retirez d'abord l'instance correspondante "
+                           "(CadAssemblyInstance) avant de le supprimer."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Purge storage best-effort : la suppression en base a déjà réussi et
+        # ne doit pas être remise en cause par un échec ici (même principe que
+        # les exports glTF « best-effort » de tasks.py) — au pire, des octets
+        # orphelins survivent côté storage, pas un projet fantôme côté app.
+        for photo in photos:
+            for field in (photo.file, photo.region_map, photo.region_overlay):
+                if field:
+                    try:
+                        field.delete(save=False)
+                    except Exception:
+                        pass
+        for mesh in meshes:
+            for field in (mesh.file, mesh.gltf_file, mesh.step_file):
+                if field:
+                    try:
+                        field.delete(save=False)
+                    except Exception:
+                        pass
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

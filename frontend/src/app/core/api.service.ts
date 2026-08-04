@@ -390,6 +390,12 @@ export class ApiService {
     return this.http.patch<Project>(`${this.base}/api/projects/${id}/`, data);
   }
 
+  /** Supprime le projet (top-level ou sous-partie) et tout ce qui en dépend
+   * (photos, maillages, sous-parties le cas échéant) — réservé au propriétaire. */
+  deleteProject(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.base}/api/projects/${id}/`);
+  }
+
   uploadPhotos(projectId: number, files: File[]): Observable<Photo[]> {
     const form = new FormData();
     for (const f of files) form.append('files', f);

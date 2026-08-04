@@ -42,4 +42,24 @@ export class ProjectsListComponent {
       error: () => { this.error.set("Échec de la création du projet."); this.creating.set(false); },
     });
   }
+
+  deleteProject(id: number, name: string, ev: Event): void {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const confirmed = window.confirm(
+      `Supprimer définitivement « ${name} » ?\n\nPhotos, maillages, historique CAO et sous-parties ` +
+      'éventuelles seront perdus. Cette action est irréversible.',
+    );
+    if (!confirmed) return;
+    this.api.deleteProject(id).subscribe({
+      next: () => this.reload(),
+      error: (err) => {
+        this.error.set(
+          err?.status === 409
+            ? (err?.error?.detail ?? 'Suppression refusée : ce projet est encore référencé ailleurs.')
+            : 'Échec de la suppression du projet.',
+        );
+      },
+    });
+  }
 }

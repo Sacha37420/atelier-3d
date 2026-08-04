@@ -591,6 +591,27 @@ export class ProjectDetailComponent implements OnDestroy {
     });
   }
 
+  /** Supprime définitivement une sous-partie (et son maillage, sketchs, historique
+   * CAO) — refusé (409) si elle est encore référencée par une CadAssemblyInstance
+   * de cet assemblage ou d'un autre (cf. ProjectDetailView.delete côté backend). */
+  deleteSubPart(id: number, name: string): void {
+    const confirmed = window.confirm(
+      `Supprimer définitivement la sous-partie « ${name} » ? Maillage, sketchs et historique CAO seront ` +
+      'perdus. Cette action est irréversible.',
+    );
+    if (!confirmed) return;
+    this.api.deleteProject(id).subscribe({
+      next: () => this.reloadAssembly(),
+      error: (err) => {
+        this.error.set(
+          err?.status === 409
+            ? (err?.error?.detail ?? 'Suppression refusée : cette sous-partie est encore référencée.')
+            : 'Échec de la suppression de la sous-partie.',
+        );
+      },
+    });
+  }
+
   // ── Assemblage : instances ────────────────────────────────────────────────
   toggleAddInstance(): void {
     this.addingInstance.update((v) => !v);

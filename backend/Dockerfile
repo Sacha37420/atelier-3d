@@ -117,13 +117,19 @@ RUN mkdir -p /opt/fastsam && curl -sSL --fail -o /opt/fastsam/FastSAM-s.pt \
 # pour réutiliser l'OCP déjà en place — vérifié au spike : l'import fonctionne
 # malgré la variante VTK, aucun repli par export/import STEP nécessaire (cq_gears
 # génère directement une forme OCCT intégrable telle quelle dans build123d).
+# Versions épinglées : cadquery 2.8 impose cadquery-ocp 7.9.x, mais build123d
+# >= 0.12, ocp_gordon >= 0.3 et ocpsvg >= 0.7 visent OCP 8.0 (import de
+# OCP.collections, absent de 7.9). Le --no-deps de build123d masque ce conflit
+# au build : le backend plantait au démarrage (constaté le 2026-09-28 au premier
+# rebuild sans cache après la sortie de build123d 0.13). N'en relever une que
+# quand cadquery passe lui-même à OCP 8.
 RUN pip install --no-cache-dir --break-system-packages cadquery && \
     pip install --no-cache-dir --break-system-packages \
     "git+https://github.com/meadiode/cq_gears.git" && \
-    pip install --no-cache-dir --break-system-packages --no-deps build123d && \
+    pip install --no-cache-dir --break-system-packages --no-deps "build123d==0.11.1" && \
     pip install --no-cache-dir --break-system-packages \
     typing_extensions "ezdxf>=1.1.0" anytree svgpathtools ipython \
-    ocpsvg ocp_gordon trianglesolver sympy scikit-learn webcolors requests lib3mf
+    "ocpsvg==0.6.0" "ocp_gordon==0.2.2" trianglesolver sympy scikit-learn webcolors requests lib3mf
 
 # --- FreeCAD >= 1.0 headless (workbench Assembly/OndselSolver, Job CAD_ASSEMBLE) :
 # le paquet apt d'Ubuntu 24.04 est antérieur à 1.0 (pas de workbench Assembly) —

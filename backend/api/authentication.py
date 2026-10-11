@@ -1,5 +1,5 @@
 import jwt
-from jwt import PyJWKClient, InvalidTokenError
+from jwt import PyJWKClient, PyJWKClientError, InvalidTokenError
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from django.conf import settings
@@ -68,6 +68,11 @@ class KeycloakJWTAuthentication(BaseAuthentication):
             )
         except InvalidTokenError as exc:
             raise AuthenticationFailed(f'Token invalide : {exc}') from exc
+        except PyJWKClientError as exc:
+            # Clé `kid` absente du JWKS, ou JWKS injoignable : PyJWKClientError
+            # n'hérite pas d'InvalidTokenError. Sans cette branche, un jeton
+            # forgé avec un `kid` quelconque provoquait une erreur 500.
+            raise AuthenticationFailed('Token invalide : clé de signature introuvable.') from exc
 
         # Le token doit avoir été émis POUR cette application.
         # Sans ce contrôle, n'importe quel token du realm est accepté : le realm

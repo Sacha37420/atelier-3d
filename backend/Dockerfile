@@ -167,4 +167,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
 COPY . .
 EXPOSE 8000
-CMD ["sh", "-c", "python manage.py migrate --no-input && python manage.py runserver 0.0.0.0:8000"]
+# gunicorn et non runserver (serveur de développement). Réglages et raisons :
+# gunicorn.conf.py.
+CMD ["sh", "-c", "python manage.py migrate --no-input && exec gunicorn -c gunicorn.conf.py config.wsgi:application"]

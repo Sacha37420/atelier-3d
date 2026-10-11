@@ -84,7 +84,17 @@ services:
     build: ./frontend
     container_name: atelier-3d-frontend
     restart: unless-stopped
-    env_file: .env
+    # Uniquement les variables que lit nginx-entrypoint.sh pour écrire env.js —
+    # aucune n'est secrète (env.js est servi au navigateur). `env_file: .env`
+    # donnait à ce conteneur nginx tous les secrets de l'app.
+    environment:
+      DOMAIN: ${DOMAIN:-}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-}
+      KEYCLOAK_PUBLIC_URL: ${KEYCLOAK_PUBLIC_URL:-}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-}
+      PORT_BACKEND: ${PORT_BACKEND:-}
+      PORT_FRONTEND: ${PORT_FRONTEND:-}
+      STORAGE_PORT_BACKEND: ${STORAGE_PORT_BACKEND:-}
     ports:
       - "4210:80"
     networks:

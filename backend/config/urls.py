@@ -19,23 +19,7 @@ class CustomSwaggerUIView(SpectacularSwaggerView):
     }
 
 urlpatterns = [
-    # Serve drf_spectacular_sidecar assets under /api/docs/sidecar/<file>
-    path('api/docs/sidecar/<path:path>', static_serve, {
-        'document_root': os.path.join(os.path.dirname(drf_spectacular_sidecar.__file__), 'static', 'drf_spectacular_sidecar', 'swagger-ui-dist')
-    }),
-    # Serve oauth2 redirect page and script from the sidecar distribution
-    path('api/docs/oauth2-redirect.html', static_serve, {
-        'path': 'oauth2-redirect.html',
-        'document_root': os.path.join(os.path.dirname(drf_spectacular_sidecar.__file__), 'static', 'drf_spectacular_sidecar', 'swagger-ui-dist')
-    }, name='oauth2-redirect'),
-    path('api/docs/oauth2-redirect.js', static_serve, {
-        'path': 'oauth2-redirect.js',
-        'document_root': os.path.join(os.path.dirname(drf_spectacular_sidecar.__file__), 'static', 'drf_spectacular_sidecar', 'swagger-ui-dist')
-    }),
-    path('', lambda request: HttpResponseRedirect(request.META.get('SCRIPT_NAME', '') + '/api/docs/')),
     path('api/', include('api.urls')),
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    path('api/docs/', CustomSwaggerUIView.as_view(), name='swagger-ui'),
     # Photos et maillages (proxiés depuis l'app storage, cf. api/storage_backend.py)
     # — chemin relatif 'media/' : derrière Caddy (handle_path), le PATH_INFO côté
     # Django commence déjà par 'media/'. Authentifié (MediaView, cf. api/views.py) :
@@ -43,3 +27,27 @@ urlpatterns = [
     # directement.
     path('media/<path:path>', MediaView.as_view()),
 ]
+
+# Documentation de l'API (schéma OpenAPI, Swagger UI, redirection de la racine
+# vers elle) : uniquement en DEBUG. Le lab est exposé sur Internet et ces routes
+# répondaient sans authentification — elles décrivaient toute l'API à n'importe
+# qui. En service (DEBUG=False) elles n'existent pas : 404.
+if settings.DEBUG:
+    urlpatterns += [
+        # Serve drf_spectacular_sidecar assets under /api/docs/sidecar/<file>
+        path('api/docs/sidecar/<path:path>', static_serve, {
+            'document_root': os.path.join(os.path.dirname(drf_spectacular_sidecar.__file__), 'static', 'drf_spectacular_sidecar', 'swagger-ui-dist')
+        }),
+        # Serve oauth2 redirect page and script from the sidecar distribution
+        path('api/docs/oauth2-redirect.html', static_serve, {
+            'path': 'oauth2-redirect.html',
+            'document_root': os.path.join(os.path.dirname(drf_spectacular_sidecar.__file__), 'static', 'drf_spectacular_sidecar', 'swagger-ui-dist')
+        }, name='oauth2-redirect'),
+        path('api/docs/oauth2-redirect.js', static_serve, {
+            'path': 'oauth2-redirect.js',
+            'document_root': os.path.join(os.path.dirname(drf_spectacular_sidecar.__file__), 'static', 'drf_spectacular_sidecar', 'swagger-ui-dist')
+        }),
+        path('', lambda request: HttpResponseRedirect(request.META.get('SCRIPT_NAME', '') + '/api/docs/')),
+        path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+        path('api/docs/', CustomSwaggerUIView.as_view(), name='swagger-ui'),
+    ]

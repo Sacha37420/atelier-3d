@@ -39,3 +39,4 @@ lxml>=5.0
 # (contrairement à open3d, cf. repair.py) — voir facade.py pour la mesure de
 # latence par photo.
 ultralytics>=8.3
+gunicorn>=23.0,<24.0

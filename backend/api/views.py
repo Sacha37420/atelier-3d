@@ -1383,6 +1383,15 @@ class CadAssemblyConstraintListCreateView(APIView):
         project = permissions.get_editable_project(request, pk)
         serializer = CadAssemblyConstraintSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        # Une contrainte ne relie que des instances de SON assemblage : le
+        # sérialiseur ne vérifie que leur existence, tous projets confondus.
+        for champ in ('instance_a', 'instance_b'):
+            instance = serializer.validated_data.get(champ)
+            if instance is not None and instance.assembly_project_id != project.id:
+                return Response(
+                    {'detail': f"'{champ}' doit désigner une instance de cet assemblage."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         serializer.save(assembly_project=project)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 

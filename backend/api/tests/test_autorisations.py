@@ -678,17 +678,32 @@ class ReferencesCroiseesTests(Base):
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.json()['source_mesh'], ancien.id)
 
-    # DÉFAUT (intégrité, mineur) — CadAssemblyConstraintListCreateView.post
-    # accepte des `instance_a`/`instance_b` appartenant à un autre assemblage,
-    # y compris celui d'un projet invisible pour l'appelant.
-    @unittest.expectedFailure
+    # Corrigé : une contrainte acceptait les instances d'un autre assemblage.
     def test_contrainte_ne_peut_pas_viser_l_instance_d_un_autre_assemblage(self):
         resp = self.david.post(f'/api/projects/{self.asm_david.id}/cad-constraints/', {
             'constraint_type': 'COINCIDENT', 'instance_a': self.inst_david.id,
             'reference_a': {'kind': 'face', 'index': 0},
             'instance_b': self.inst_alice.id, 'reference_b': {'kind': 'face', 'index': 0},
         }, format='json')
-        self.assertIn(resp.status_code, (400, 403, 404))
+        self.assertEqual(resp.status_code, 400)
+        resp = self.david.post(f'/api/projects/{self.asm_david.id}/cad-constraints/', {
+            'constraint_type': 'FIXED', 'instance_a': self.inst_alice.id,
+            'reference_a': {'kind': 'face', 'index': 0},
+        }, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(CadAssemblyConstraint.objects.filter(assembly_project=self.asm_david).count(), 1)
+
+    def test_contrainte_entre_instances_de_son_assemblage_acceptee(self):
+        bis = CadAssemblyInstance.objects.create(
+            assembly_project=self.asm_david, source_project=self.piece_david,
+            source_mesh=self.inst_david.source_mesh)
+        resp = self.david.post(f'/api/projects/{self.asm_david.id}/cad-constraints/', {
+            'constraint_type': 'COINCIDENT', 'instance_a': self.inst_david.id,
+            'reference_a': {'kind': 'face', 'index': 0},
+            'instance_b': bis.id, 'reference_b': {'kind': 'face', 'index': 1},
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.json()['assembly_project'], self.asm_david.id)
 
     def test_instance_la_piece_doit_etre_une_sous_partie_de_cet_assemblage(self):
         piece_alice = self.inst_alice.source_project

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from django.db import transaction
 from django.db.models import Max, ProtectedError
-from django.http import HttpResponse, StreamingHttpResponse
+from django.http import Http404, HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.text import get_valid_filename
 from rest_framework.views import APIView
@@ -1306,6 +1306,15 @@ class CadAssemblyInstanceListCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             data['source_mesh'] = latest.id
+        else:
+            # Un `source_mesh` fourni doit être un Mesh de CETTE sous-partie (donc
+            # d'un projet que l'appelant lit déjà) — même contrôle que le PATCH de
+            # CadAssemblyInstanceDetailView. Sans lui, n'importe quel id de Mesh
+            # passait : CAD_ASSEMBLE en aurait lu le STEP par le compte de service.
+            try:
+                get_object_or_404(Mesh, pk=data.get('source_mesh'), project=source_project)
+            except (TypeError, ValueError):
+                raise Http404()
         serializer = CadAssemblyInstanceSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         serializer.save(assembly_project=project)

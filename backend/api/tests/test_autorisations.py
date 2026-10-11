@@ -648,23 +648,35 @@ class ReferencesCroiseesTests(Base):
         self.asm_david, self.piece_david, _, self.inst_david = self.assemblage(DAVID)
         self.asm_alice, _, self.mesh_alice, self.inst_alice = self.assemblage(ALICE)
 
-    # DÉFAUT (sécurité) — CadAssemblyInstanceListCreateView.post ne contrôle
-    # `source_mesh` que s'il est absent. Fourni, n'importe quel id de Mesh passe
-    # (CadAssemblyInstanceSerializer ne vérifie que son existence). David épingle
-    # ainsi le maillage d'Alice dans SON assemblage : le job CAD_ASSEMBLE en
-    # télécharge le STEP par le compte de service (cad_assemble._build_payload →
-    # download_to) et le republie dans le projet de David ; et le PROTECT de
-    # `source_mesh` empêche Alice de supprimer son projet.
-    # Correctif attendu : exiger source_mesh.project == source_project (comme le
-    # fait déjà le PATCH de CadAssemblyInstanceDetailView).
-    @unittest.expectedFailure
+    # Corrigé (fix(sécurité)) : un `source_mesh` fourni n'était pas contrôlé — David
+    # épinglait le maillage d'Alice dans SON assemblage, et CAD_ASSEMBLE en aurait
+    # lu le STEP par le compte de service.
     def test_instance_ne_peut_pas_epingler_le_maillage_d_un_projet_etranger(self):
         resp = self.david.post(f'/api/projects/{self.asm_david.id}/cad-instances/', {
             'source_project': self.piece_david.id, 'source_mesh': self.mesh_alice.id,
         }, format='json')
-        self.assertIn(resp.status_code, (400, 403, 404))
+        self.assertEqual(resp.status_code, 404)
         self.assertFalse(CadAssemblyInstance.objects.filter(
             assembly_project=self.asm_david, source_mesh=self.mesh_alice).exists())
+        # Ni le maillage d'une AUTRE sous-partie du même assemblage (incohérent avec
+        # le contrôle de version), ni un id qui n'existe pas ou n'est pas un nombre.
+        autre_piece = self.projet(DAVID, name='Autre pièce', parent_project=self.asm_david)
+        autre_mesh = self.maillage(autre_piece, step=b'step')
+        for mesh_id in (autre_mesh.id, 999999, 'abc'):
+            resp = self.david.post(f'/api/projects/{self.asm_david.id}/cad-instances/', {
+                'source_project': self.piece_david.id, 'source_mesh': mesh_id,
+            }, format='json')
+            self.assertEqual(resp.status_code, 404)
+        self.assertEqual(CadAssemblyInstance.objects.filter(assembly_project=self.asm_david).count(), 1)
+
+    def test_instance_accepte_un_maillage_precis_de_la_piece(self):
+        ancien = self.inst_david.source_mesh
+        self.maillage(self.piece_david, version=2, step=b'step v2')
+        resp = self.david.post(f'/api/projects/{self.asm_david.id}/cad-instances/', {
+            'source_project': self.piece_david.id, 'source_mesh': ancien.id,
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.json()['source_mesh'], ancien.id)
 
     # DÉFAUT (intégrité, mineur) — CadAssemblyConstraintListCreateView.post
     # accepte des `instance_a`/`instance_b` appartenant à un autre assemblage,

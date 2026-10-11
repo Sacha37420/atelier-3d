@@ -1,3 +1,4 @@
+import logging
 import tempfile
 import uuid
 from pathlib import Path
@@ -30,6 +31,9 @@ from .tasks import (
     run_reconstruction, run_repair, run_facade_segmentation, run_cad_build, run_cad_assemble,
     run_mesh_import,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class StorageUnavailable(APIException):
@@ -208,6 +212,21 @@ class ProjectDetailView(generics.RetrieveUpdateAPIView):
         projects_to_purge = [project, *project.sub_parts.all()]
         photos = list(Photo.objects.filter(project__in=projects_to_purge))
         meshes = list(Mesh.objects.filter(project__in=projects_to_purge))
+        # Le partage storage et les chemins sont résolus ICI, pas après : le
+        # partage d'un fichier se déduit du projet désigné par son chemin
+        # (storage_backend.namespace_for_path), qui n'existera plus en base.
+        project_id = project.pk
+        is_root = project.parent_project_id is None
+        namespace = storage_client.namespace_for_project(project.root_project.pk)
+        names = [
+            field.name
+            for photo in photos
+            for field in (photo.file, photo.region_map, photo.region_overlay) if field
+        ] + [
+            field.name
+            for mesh in meshes
+            for field in (mesh.file, mesh.gltf_file, mesh.step_file) if field
+        ]
 
         try:
             with transaction.atomic():
@@ -221,23 +240,26 @@ class ProjectDetailView(generics.RetrieveUpdateAPIView):
             )
 
         # Purge storage best-effort : la suppression en base a déjà réussi et
-        # ne doit pas être remise en cause par un échec ici (même principe que
-        # les exports glTF « best-effort » de tasks.py) — au pire, des octets
-        # orphelins survivent côté storage, pas un projet fantôme côté app.
-        for photo in photos:
-            for field in (photo.file, photo.region_map, photo.region_overlay):
-                if field:
-                    try:
-                        field.delete(save=False)
-                    except Exception:
-                        pass
-        for mesh in meshes:
-            for field in (mesh.file, mesh.gltf_file, mesh.step_file):
-                if field:
-                    try:
-                        field.delete(save=False)
-                    except Exception:
-                        pass
+        # ne doit pas être remise en cause par un échec ici — au pire, des
+        # octets orphelins survivent côté storage, pas un projet fantôme côté
+        # app. Un échec est journalisé, jamais avalé en silence.
+        for name in names:
+            try:
+                storage_client.delete(name, namespace=namespace)
+            except Exception:
+                logger.exception(
+                    "Projet %s supprimé, mais fichier non purgé de storage : %s/%s",
+                    project_id, namespace, name,
+                )
+        # Un projet racine emporte son partage storage (membres compris) ; une
+        # sous-partie n'en a pas, ses fichiers vivaient dans celui de la racine.
+        if is_root:
+            try:
+                storage_client.delete_share(namespace)
+            except Exception:
+                logger.exception(
+                    "Projet %s supprimé, mais partage storage non retiré : %s", project_id, namespace,
+                )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 

@@ -253,6 +253,18 @@ def ensure_share(namespace: str) -> None:
     raise StorageClientError(f'Création du partage storage échouée (HTTP {resp.status_code}) : {resp.text[:200]}')
 
 
+def delete_share(namespace: str) -> None:
+    """Supprime le partage `namespace` et, côté storage, tous ses fichiers
+    (cascade de DELETE /api/shares/<nom>/). Un partage déjà absent n'est pas
+    une erreur. Appelé à la suppression d'un projet RACINE."""
+    try:
+        resp = requests.delete(_shares_url(f'{namespace}/'), headers=_headers(), timeout=_TIMEOUT)
+    except requests.RequestException as exc:
+        raise StorageClientError(f'storage injoignable : {exc}') from exc
+    if resp.status_code not in (204, 404):
+        raise StorageClientError(f'Suppression du partage storage échouée (HTTP {resp.status_code}).')
+
+
 def list_members(namespace: str) -> list[dict]:
     try:
         resp = requests.get(

@@ -119,30 +119,42 @@ class SuppressionTests(Base):
         # Les octets d'un AUTRE projet ne sont jamais touchés.
         self.assertIn((self.espace(self.autre), self.fichier_autre), self.storage.fichiers)
 
-    # DÉFAUT — la purge storage annoncée par ProjectDetailView.delete ne purge
-    # rien. Elle est faite APRÈS `project.delete()` par `field.delete()`, donc
-    # par LabStorage.delete() → namespace_for_path(), qui relit en base le projet
-    # désigné par le chemin (`Project.objects.get(pk=<id>)`) pour trouver son
-    # partage : la ligne vient d'être supprimée, Project.DoesNotExist est levée,
-    # et le `except Exception: pass` de la vue l'avale. Tous les fichiers (photos,
-    # cartes de régions, PLY, glTF, STEP) restent dans storage, sans erreur ni
-    # trace — et leur partage `…-project-<id>` aussi, avec ses membres.
-    # Correctif attendu : résoudre le partage AVANT la suppression (ou appeler
-    # storage_client.delete(nom, namespace=…) avec un nom de partage calculé avant).
-    @unittest.expectedFailure
+    # Corrigé : la purge était faite après `project.delete()` par `field.delete()`,
+    # qui relisait en base le projet tout juste supprimé pour trouver son partage —
+    # l'exception était avalée, rien n'était purgé.
     def test_suppression_purge_les_octets_du_projet_et_de_ses_sous_parties(self):
         espace = self.espace(self.racine)
+        self.storage.partages[espace] = {ALICE: 'write', BOB: 'write', CHLOE: 'read'}
+        self.storage.partages[self.espace(self.autre)] = {ALICE: 'write'}
         self.assertEqual(len([1 for (ns, _) in self.storage.fichiers if ns == espace]), 7)
         self.assertEqual(self.alice.delete(self.url).status_code, 204)
         self.assertEqual(sorted(c for (ns, c) in self.storage.fichiers if ns == espace), [])
+        self.assertEqual(len(self.storage.appels_vers('/content/', 'DELETE')), 7)   # un par fichier
+        # Projet racine : son partage storage part aussi, avec ses membres.
+        self.assertNotIn(espace, self.storage.partages)
+        # Rien d'un autre projet n'est touché.
+        self.assertEqual(self.storage.partages, {self.espace(self.autre): {ALICE: 'write'}})
+        self.assertIn((self.espace(self.autre), self.fichier_autre), self.storage.fichiers)
 
-    # Même cause : supprimer une sous-partie seule laisse ses fichiers.
-    @unittest.expectedFailure
-    def test_suppression_d_une_sous_partie_purge_ses_octets(self):
+    def test_suppression_d_une_sous_partie_purge_ses_octets_et_eux_seuls(self):
         espace = self.espace(self.racine)
+        self.storage.partages[espace] = {ALICE: 'write'}
         self.assertEqual(self.alice.delete(f'/api/projects/{self.piece.id}/').status_code, 204)
-        restants = [c for (ns, c) in self.storage.fichiers if ns == espace]
-        self.assertFalse([c for c in restants if c.startswith(f'projects/{self.piece.id}/')])
+        restants = sorted(c for (ns, c) in self.storage.fichiers if ns == espace)
+        self.assertEqual(restants, sorted([
+            self.mesh_racine.file.name, self.mesh_racine.gltf_file.name,
+            self.photo.file.name, self.photo.region_map.name,
+        ]))
+        self.assertIn(espace, self.storage.partages)    # le partage est celui de la racine : il reste
+
+    def test_purge_en_echec_journalisee_la_suppression_reste_acquise(self):
+        self.storage.arrete = True
+        with self.assertLogs('api.views', level='ERROR') as journal:
+            self.assertEqual(self.alice.delete(self.url).status_code, 204)
+        self.assertFalse(Project.objects.filter(pk__in=[self.racine.pk, self.piece.pk]).exists())
+        self.assertEqual(len(journal.records), 8)       # 7 fichiers + le partage
+        self.assertIn(f'projects/{self.racine.id}/photos/a.jpg', journal.output[0])
+        self.assertIn('partage storage non retiré', journal.output[-1])
 
     def test_suppression_d_une_sous_partie_seule_laisse_la_racine_intacte(self):
         self.assertEqual(self.alice.delete(f'/api/projects/{self.piece.id}/').status_code, 204)

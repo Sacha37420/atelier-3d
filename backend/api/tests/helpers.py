@@ -172,6 +172,14 @@ class FauxStorage:
                 return FausseReponse(400, {'name': ['existe déjà']})
             self.partages[data['name']] = {}
             return FausseReponse(201, {'name': data['name']})
+        if (m := re.fullmatch(r'/api/shares/([^/]+)/', chemin)) and verbe == 'DELETE':
+            ns = m.group(1)             # comme storage : le partage emporte ses fichiers
+            if ns not in self.partages:
+                return FausseReponse(404)
+            del self.partages[ns]
+            for cle in [c for c in self.fichiers if c[0] == ns]:
+                del self.fichiers[cle]
+            return FausseReponse(204)
         if m := re.fullmatch(r'/api/shares/([^/]+)/members/', chemin):
             ns = m.group(1)
             if ns not in self.partages:

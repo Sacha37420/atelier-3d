@@ -7,7 +7,6 @@ laisser deviner qu'il existe) ; un projet visible mais non modifiable répond
 `editable_projects` — les deux sont un refus, ce que `REFUS_ECRITURE` accepte.
 """
 import io
-import unittest
 from unittest import mock
 
 import numpy as np

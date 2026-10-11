@@ -1,7 +1,5 @@
 """Hiérarchie projet / sous-partie (héritage complet des droits et du partage
 storage du projet racine) et suppression avec purge des octets."""
-import unittest
-
 from django.test import TestCase
 
 from api import permissions, storage_backend
@@ -177,15 +175,16 @@ class SuppressionTests(Base):
         job.save()
         self.assertEqual(self.alice.delete(self.url).status_code, 204)
 
-    # DÉFAUT (mineur) — le garde « job actif » ne regarde que les jobs du projet
-    # supprimé, pas ceux de ses sous-parties, pourtant emportées par la même
-    # cascade : un CAD_BUILD en cours sur une sous-partie n'empêche pas de
-    # supprimer l'assemblage, et la tâche écrit ensuite pour un projet disparu.
-    @unittest.expectedFailure
+    # Corrigé : le garde « job actif » ignorait les jobs des sous-parties.
     def test_refusee_tant_qu_un_job_est_actif_sur_une_sous_partie(self):
         Job.objects.create(project=self.piece, kind=Job.CAD_BUILD, status=Job.RUNNING)
         self.assertEqual(self.alice.delete(self.url).status_code, 409)
         self.assertTrue(Project.objects.filter(pk=self.racine.pk).exists())
+        self.assertEqual(self.storage.appels, [])
+        # Le job d'une sous-partie ne retient pas une AUTRE sous-partie, ni un autre projet.
+        libre = self.projet(ALICE, name='Libre', parent_project=self.racine)
+        self.assertEqual(self.alice.delete(f'/api/projects/{libre.id}/').status_code, 204)
+        self.assertEqual(self.alice.delete(f'/api/projects/{self.autre.id}/').status_code, 204)
 
     def test_refusee_tant_qu_un_maillage_est_epingle_par_une_instance(self):
         """`CadAssemblyInstance.source_mesh` est en PROTECT : ni la sous-partie

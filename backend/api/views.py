@@ -197,19 +197,19 @@ class ProjectDetailView(generics.RetrieveUpdateAPIView):
     def delete(self, request, pk):
         project = get_object_or_404(Project, pk=pk)
         permissions.check_owner(project, request)
-        if project.has_active_job:
-            return Response(
-                {'detail': "Un job est en cours pour ce projet — attendre sa fin (ou son échec) "
-                           "avant de le supprimer."},
-                status=status.HTTP_409_CONFLICT,
-            )
-
         # Récupérés AVANT suppression : une fois le CASCADE passé, ces lignes
         # n'existent plus, impossible de savoir a posteriori quels fichiers
         # storage purger. Inclut les sous-parties (Project.sub_parts) : leur
         # CASCADE fait partie de la même suppression (cf. Project.parent_project,
         # on_delete=CASCADE), donc leurs propres photos/maillages aussi.
         projects_to_purge = [project, *project.sub_parts.all()]
+        # Les jobs des sous-parties comptent aussi : elles partent dans la même cascade.
+        if Job.objects.filter(project__in=projects_to_purge, status__in=[Job.PENDING, Job.RUNNING]).exists():
+            return Response(
+                {'detail': "Un job est en cours pour ce projet (ou une de ses sous-parties) — attendre "
+                           "sa fin (ou son échec) avant de le supprimer."},
+                status=status.HTTP_409_CONFLICT,
+            )
         photos = list(Photo.objects.filter(project__in=projects_to_purge))
         meshes = list(Mesh.objects.filter(project__in=projects_to_purge))
         # Le partage storage et les chemins sont résolus ICI, pas après : le

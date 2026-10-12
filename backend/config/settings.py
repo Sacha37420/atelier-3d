@@ -118,6 +118,8 @@ REST_FRAMEWORK = {
     # Lot 5.3 (Conception CAO) : scope 'public' utilisé par PublicReadThrottle
     # (api/views.py) sur les seules routes /api/public/assemblies/... — même
     # convention que restauration/backend/config/settings.py.
+    # storage injoignable ⇒ 502 lisible plutôt qu'une erreur 500 (api/views.py).
+    'EXCEPTION_HANDLER': 'api.views.api_exception_handler',
     'DEFAULT_THROTTLE_RATES': {
         'public': '60/min',
     },

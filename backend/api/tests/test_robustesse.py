@@ -3,6 +3,7 @@
 from unittest import mock
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import transaction
 from django.test import TestCase
 
 from api.models import CadAssemblyInstance, Job, Part, Photo
@@ -88,3 +89,46 @@ class FichierDeMaillageDisparuTests(Base):
             with self.subTest(chemin=chemin):
                 self.assertEqual(self.alice.get(chemin, params).status_code, 404)
         self.assertEqual(self.alice.post(f'/api/meshes/{self.mesh.id}/parts/suggest/', {}, format='json').status_code, 404)
+
+
+class StorageArreteTests(Base):
+    """storage injoignable : 502 « Stockage indisponible », pas 500."""
+
+    def setUp(self):
+        super().setUp()
+        self.storage.arrete = True
+
+    def assert502(self, resp):
+        self.assertEqual(resp.status_code, 502)
+        self.assertIn('Stockage indisponible', resp.json()['detail'])
+
+    def test_lectures_d_un_maillage(self):
+        avant = temporaires()
+        for chemin, params in ((f'/api/meshes/{self.mesh.id}/export/', {}),
+                               (f'/api/meshes/{self.mesh.id}/auto-orient/', {}),
+                               (f'/api/parts/{self.a.id}/suggest-axis/', {'other': self.b.id})):
+            with self.subTest(chemin=chemin):
+                self.assert502(self.alice.get(chemin, params))
+        self.assertEqual(temporaires(), avant)
+
+    def test_parties_suggestion_creation_retouche(self):
+        self.assert502(self.alice.post(f'/api/meshes/{self.mesh.id}/parts/suggest/', {}, format='json'))
+        self.assert502(self.alice.post(f'/api/meshes/{self.mesh.id}/parts/', {'name': 'C', 'face_ids': [4]}, format='json'))
+        self.assert502(self.alice.patch(f'/api/parts/{self.a.id}/', {'face_ids': [5]}, format='json'))
+        self.assertEqual(Part.objects.count(), 2)
+
+    def test_depot_de_photo_rien_n_est_garde(self):
+        # Le bloc `atomic` n'est là que pour le test : l'échec survient pendant
+        # `Model.save()`, qui marque la transaction englobante de TestCase à annuler ;
+        # ce point de reprise la rend de nouveau utilisable pour compter ensuite.
+        with transaction.atomic():
+            resp = self.alice.post(f'/api/projects/{self.p.id}/photos/',
+                                   {'files': [SimpleUploadedFile('a.jpg', b'x')]}, format='multipart')
+        self.assert502(resp)
+        self.assertEqual(Photo.objects.count(), 0)
+
+    def test_label_sur_une_photo(self):
+        photo = Photo.objects.create(project=self.p, file=f'projects/{self.p.id}/photos/a.jpg',
+                                     region_map=f'projects/{self.p.id}/photos/regions/1_regions.npz')
+        self.assert502(self.alice.post(f'/api/photos/{photo.id}/labels/',
+                                       {'x': 0.5, 'y': 0.5, 'semantic_class': 'mur'}, format='json'))

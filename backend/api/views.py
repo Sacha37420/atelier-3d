@@ -8,7 +8,7 @@ from django.db.models import Max, ProtectedError
 from django.http import Http404, HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.text import get_valid_filename
-from rest_framework.views import APIView
+from rest_framework.views import APIView, exception_handler as drf_exception_handler
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework import generics, status
@@ -58,6 +58,17 @@ class StorageUnavailable(APIException):
     status_code = 502
     default_detail = 'Stockage indisponible.'
     default_code = 'storage_unavailable'
+
+
+def api_exception_handler(exc, context):
+    """Branché sur REST_FRAMEWORK['EXCEPTION_HANDLER'] (config/settings.py).
+    storage injoignable ou en erreur pendant une vue qui ne le traite pas
+    elle-même (export, suggestions, dépôt de photo, labels…) : 502 « Stockage
+    indisponible », pas une erreur 500 anonyme. Les vues qui ont leur propre
+    traitement (partages, /media/, routes publiques, purges) ne passent pas ici."""
+    if isinstance(exc, storage_client.StorageClientError):
+        exc = StorageUnavailable(f'Stockage indisponible : {exc}')
+    return drf_exception_handler(exc, context)
 
 
 class MeView(APIView):

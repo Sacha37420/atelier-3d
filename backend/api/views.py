@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework import generics, status
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
 
 from . import facade, permissions, reconstruction, repair, segmentation, storage_backend, storage_client, video_import
@@ -34,6 +34,16 @@ from .tasks import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _get_or_404(klass, **kwargs):
+    """`get_object_or_404`, pour un identifiant pris dans le corps ou les
+    paramètres de la requête : mal formé ('abc', une liste…), il vaut 404 — pas
+    l'erreur 500 d'un ValueError/TypeError levé par l'ORM."""
+    try:
+        return get_object_or_404(klass, **kwargs)
+    except (TypeError, ValueError):
+        raise Http404()
 
 
 class StorageUnavailable(APIException):
@@ -920,7 +930,7 @@ class SuggestJointAxisView(APIView):
     def get(self, request, pk):
         part = get_object_or_404(Part, pk=pk)
         permissions.check_read(part.mesh.project, request)
-        other = get_object_or_404(Part, pk=request.query_params.get('other'), mesh=part.mesh)
+        other = _get_or_404(Part, pk=request.query_params.get('other'), mesh=part.mesh)
         try:
             with storage_backend.local_copy(part.mesh.file) as mesh_path:
                 suggestion = segmentation.suggest_joint_axis(
@@ -942,7 +952,10 @@ class JobListView(generics.ListAPIView):
         qs = Job.objects.filter(project__in=permissions.visible_projects(email))
         project_id = self.request.query_params.get('project')
         if project_id:
-            qs = qs.filter(project_id=project_id)
+            try:
+                qs = qs.filter(project_id=int(project_id))
+            except ValueError:
+                raise ValidationError({'project': ['Identifiant de projet invalide.']})
         return qs[:50]
 
 
@@ -1340,7 +1353,7 @@ class CadAssemblyInstanceListCreateView(APIView):
     def post(self, request, pk):
         project = permissions.get_editable_project(request, pk)
         data = request.data.copy()
-        source_project = get_object_or_404(Project, pk=data.get('source_project'), parent_project=project)
+        source_project = _get_or_404(Project, pk=data.get('source_project'), parent_project=project)
         if not data.get('source_mesh'):
             latest = source_project.meshes.order_by('-version').first()
             if latest is None:
@@ -1354,10 +1367,7 @@ class CadAssemblyInstanceListCreateView(APIView):
             # d'un projet que l'appelant lit déjà) — même contrôle que le PATCH de
             # CadAssemblyInstanceDetailView. Sans lui, n'importe quel id de Mesh
             # passait : CAD_ASSEMBLE en aurait lu le STEP par le compte de service.
-            try:
-                get_object_or_404(Mesh, pk=data.get('source_mesh'), project=source_project)
-            except (TypeError, ValueError):
-                raise Http404()
+            _get_or_404(Mesh, pk=data.get('source_mesh'), project=source_project)
         serializer = CadAssemblyInstanceSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         serializer.save(assembly_project=project)
@@ -1390,7 +1400,7 @@ class CadAssemblyInstanceDetailView(APIView):
         new_mesh_id = request.data.get('source_mesh')
         if not new_mesh_id:
             return Response({'detail': "'source_mesh' requis."}, status=status.HTTP_400_BAD_REQUEST)
-        new_mesh = get_object_or_404(Mesh, pk=new_mesh_id, project=instance.source_project)
+        new_mesh = _get_or_404(Mesh, pk=new_mesh_id, project=instance.source_project)
 
         has_constraints = instance.constraints_as_a.exists() or instance.constraints_as_b.exists()
         instance.source_mesh = new_mesh

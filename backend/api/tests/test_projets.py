@@ -4,7 +4,7 @@ from django.test import TestCase
 
 from api import permissions, storage_backend
 from api.models import (
-    CadAssemblyInstance, Job, Mesh, Photo, Project, ProjectShare,
+    CadAssemblyConstraint, CadAssemblyInstance, Job, Mesh, Photo, Project, ProjectShare,
 )
 
 from .helpers import ALICE, BOB, CHLOE, DAVID, LabMixin
@@ -106,6 +106,7 @@ class SuppressionTests(Base):
         self.fichier_autre = self.deposer(self.autre, f'projects/{self.autre.id}/photos/z.jpg')
         Photo.objects.create(project=self.autre, file=self.fichier_autre)
         self.url = f'/api/projects/{self.racine.id}/'
+        self.espace_racine = self.espace(self.racine)
 
     def test_suppression_emporte_les_sous_parties_et_tout_ce_qui_en_depend(self):
         self.assertEqual(self.alice.delete(self.url).status_code, 204)
@@ -186,18 +187,45 @@ class SuppressionTests(Base):
         self.assertEqual(self.alice.delete(f'/api/projects/{libre.id}/').status_code, 204)
         self.assertEqual(self.alice.delete(f'/api/projects/{self.autre.id}/').status_code, 204)
 
-    def test_refusee_tant_qu_un_maillage_est_epingle_par_une_instance(self):
-        """`CadAssemblyInstance.source_mesh` est en PROTECT : ni la sous-partie
-        seule, ni l'assemblage entier ne partent tant que l'instance existe —
-        et rien n'est supprimé à moitié."""
+    def test_sous_partie_epinglee_par_une_instance_protegee_tant_que_l_instance_existe(self):
+        """`CadAssemblyInstance.source_mesh` est en PROTECT : une sous-partie
+        prise SEULE ne part pas tant qu'une instance de l'assemblage place son
+        maillage — et rien n'est supprimé à moitié."""
         instance = CadAssemblyInstance.objects.create(
             assembly_project=self.racine, source_project=self.piece, source_mesh=self.mesh_piece)
         self.assertEqual(self.alice.delete(f'/api/projects/{self.piece.id}/').status_code, 409)
-        self.assertEqual(self.alice.delete(self.url).status_code, 409)
-        self.assertTrue(Project.objects.filter(pk__in=[self.racine.pk, self.piece.pk]).count() == 2)
+        self.assertTrue(Project.objects.filter(pk=self.piece.pk).exists())
         self.assertTrue(Mesh.objects.filter(pk=self.mesh_piece.pk).exists())
-        self.assertTrue(Photo.objects.filter(pk=self.photo.pk).exists())
-        self.assertEqual(len(self.storage.appels_vers('/content/', 'DELETE')), 0)
-
+        self.assertTrue(CadAssemblyInstance.objects.filter(pk=instance.pk).exists())
+        self.assertEqual(self.storage.appels, [])
         self.assertEqual(self.bob.delete(f'/api/cad-instances/{instance.id}/').status_code, 204)
+        self.assertEqual(self.alice.delete(f'/api/projects/{self.piece.id}/').status_code, 204)
+
+    def test_un_assemblage_entier_part_avec_ses_propres_instances(self):
+        """Les instances d'un assemblage partent avec lui : elles ne doivent pas
+        retenir les maillages de ses propres sous-parties (le bouton « Supprimer »
+        de la liste des projets annonce que les sous-parties seront perdues)."""
+        instance = CadAssemblyInstance.objects.create(
+            assembly_project=self.racine, source_project=self.piece, source_mesh=self.mesh_piece)
+        CadAssemblyConstraint.objects.create(
+            assembly_project=self.racine, constraint_type='FIXED', instance_a=instance,
+            reference_a={'kind': 'face', 'index': 0})
         self.assertEqual(self.alice.delete(self.url).status_code, 204)
+        self.assertFalse(Project.objects.filter(pk__in=[self.racine.pk, self.piece.pk]).exists())
+        self.assertEqual((CadAssemblyInstance.objects.count(), CadAssemblyConstraint.objects.count()), (0, 0))
+        self.assertEqual([c for (ns, c) in self.storage.fichiers if ns == self.espace_racine], [])
+
+    def test_un_maillage_epingle_depuis_un_autre_assemblage_retient_tout(self):
+        """La protection garde son sens contre une référence EXTÉRIEURE (état que
+        l'API ne permet plus de créer) : 409, et rien n'est supprimé — pas même
+        les instances propres à l'assemblage."""
+        ailleurs = self.projet(DAVID, name='Ailleurs', project_type=Project.ASSEMBLY)
+        CadAssemblyInstance.objects.create(
+            assembly_project=ailleurs, source_project=self.piece, source_mesh=self.mesh_piece)
+        propre = CadAssemblyInstance.objects.create(
+            assembly_project=self.racine, source_project=self.piece, source_mesh=self.mesh_piece)
+        self.assertEqual(self.alice.delete(self.url).status_code, 409)
+        self.assertEqual(Project.objects.filter(pk__in=[self.racine.pk, self.piece.pk]).count(), 2)
+        self.assertTrue(CadAssemblyInstance.objects.filter(pk=propre.pk).exists())
+        self.assertTrue(Photo.objects.filter(pk=self.photo.pk).exists())
+        self.assertEqual(self.storage.appels, [])

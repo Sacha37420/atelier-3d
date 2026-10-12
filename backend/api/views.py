@@ -230,6 +230,13 @@ class ProjectDetailView(generics.RetrieveUpdateAPIView):
 
         try:
             with transaction.atomic():
+                # Les instances de CET assemblage partent avec lui (CASCADE) : les
+                # retirer d'abord, sinon le PROTECT de `source_mesh` les ferait
+                # retenir les maillages de ses propres sous-parties, et un
+                # assemblage peuplé ne pourrait jamais être supprimé en entier.
+                # Une instance d'un AUTRE assemblage garde, elle, sa protection
+                # (ProtectedError ci-dessous ; la transaction rend alors celles-ci).
+                CadAssemblyInstance.objects.filter(assembly_project__in=projects_to_purge).delete()
                 project.delete()
         except ProtectedError:
             return Response(

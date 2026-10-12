@@ -652,15 +652,14 @@ class PubliqueTests(Base):
 
 
 class AnnuaireTests(Base):
-    """Routes héritées du gabarit : fermées à qui n'est pas du lab, ouvertes à
-    tout membre (qui y lit l'adresse de quiconque s'est déjà connecté)."""
+    """Les routes d'annuaire héritées du gabarit (`/api/users/`, `/api/departments/`)
+    rendaient à tout membre l'adresse de quiconque s'était connecté : elles
+    n'existent plus (retirées de tout le lab le 2026-10-12)."""
 
-    def test_annuaire_reserve_aux_membres(self):
+    def test_l_annuaire_du_gabarit_n_existe_plus(self):
         self.alice.get('/api/me/')
         for chemin in ('/api/users/', '/api/departments/'):
-            self.assertEqual(APIClient().get(chemin).status_code, 403)
-            self.assertEqual(self.david.get(chemin).status_code, 200)
-        self.assertIn(ALICE, [u['email'] for u in self.david.get('/api/users/').json()])
+            self.assertEqual(self.david.get(chemin).status_code, 404)
 
 
 class ReferencesCroiseesTests(Base):

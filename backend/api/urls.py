@@ -1,7 +1,6 @@
 from django.urls import path
 from .views import (
-    MeView, DepartmentListView, UserListView,
-    ProjectListCreateView, ProjectDetailView,
+    MeView, ProjectListCreateView, ProjectDetailView,
     ProjectShareListCreateView, ProjectShareDetailView,
     PhotoUploadView, VideoUploadView,
     ReconstructionEstimateView, ReconstructionLaunchView, MeshImportLaunchView, JobListView, JobDetailView,
@@ -21,8 +20,6 @@ from .views import (
 
 urlpatterns = [
     path('me/',          MeView.as_view()),
-    path('departments/', DepartmentListView.as_view()),
-    path('users/',       UserListView.as_view()),
 
     path('projects/',                              ProjectListCreateView.as_view()),
     path('projects/<int:pk>/',                      ProjectDetailView.as_view()),

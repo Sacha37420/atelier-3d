@@ -376,8 +376,22 @@ class PhotoUploadView(APIView):
     def delete(self, request, pk, photo_id=None):
         project = permissions.get_editable_project(request, pk)
         photo = get_object_or_404(Photo, pk=photo_id, project=project)
-        photo.file.delete(save=False)
+        # La photo ET ce qui n'appartient qu'à elle : sa carte de régions et son
+        # calque (cache FastSAM, cf. Photo.region_map) — sans cela ils restaient
+        # dans storage, sans plus aucune ligne pour les désigner.
+        names = [f.name for f in (photo.file, photo.region_map, photo.region_overlay) if f]
+        namespace = storage_client.namespace_for_project(project.root_project.pk)
         photo.delete()
+        # Même principe que la suppression d'un projet : la ligne est partie, un
+        # échec de purge est journalisé, pas rendu en erreur 500.
+        for name in names:
+            try:
+                storage_client.delete(name, namespace=namespace)
+            except Exception:
+                logger.exception(
+                    "Photo %s supprimée, mais fichier non purgé de storage : %s/%s",
+                    photo_id, namespace, name,
+                )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

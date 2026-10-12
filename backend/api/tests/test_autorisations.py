@@ -472,6 +472,31 @@ class FichiersTests(Base):
         self.assertFalse(Photo.objects.filter(pk=photo.id).exists())
         self.assertTrue(Photo.objects.filter(pk=autre.id).exists())
 
+    def test_suppression_d_une_photo_purge_aussi_sa_carte_de_regions_et_son_calque(self):
+        base = f'projects/{self.p.id}/photos'
+        photo = Photo.objects.create(
+            project=self.p, file=self.deposer(self.p, f'{base}/a.jpg'),
+            region_map=self.deposer(self.p, f'{base}/regions/1_regions.npz'),
+            region_overlay=self.deposer(self.p, f'{base}/regions/1_overlay.png'), region_count=3)
+        PhotoLabel.objects.create(photo=photo, semantic_class='mur', region_index=0)
+        voisine = Photo.objects.create(
+            project=self.p, file=self.deposer(self.p, f'{base}/b.jpg'),
+            region_map=self.deposer(self.p, f'{base}/regions/2_regions.npz'))
+        self.assertEqual(self.bob.delete(f'/api/projects/{self.p.id}/photos/{photo.id}/').status_code, 204)
+        restants = sorted(c for (_, c) in self.storage.fichiers)
+        self.assertEqual(restants, [f'{base}/b.jpg', f'{base}/regions/2_regions.npz'])   # la voisine, intacte
+        self.assertTrue(Photo.objects.filter(pk=voisine.id).exists())
+        self.assertEqual(PhotoLabel.objects.count(), 0)
+
+    def test_suppression_d_une_photo_storage_arrete_ni_erreur_500_ni_silence(self):
+        photo = Photo.objects.create(project=self.p, file=self.deposer(self.p, f'projects/{self.p.id}/photos/a.jpg'))
+        self.storage.arrete = True
+        with self.assertLogs('api.views', level='ERROR') as journal:
+            resp = self.bob.delete(f'/api/projects/{self.p.id}/photos/{photo.id}/')
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(Photo.objects.filter(pk=photo.id).exists())
+        self.assertIn(f'projects/{self.p.id}/photos/a.jpg', journal.output[0])
+
     def test_media_sert_les_membres_et_cache_le_projet_a_l_etranger(self):
         chemin = self.deposer(self.p, f'projects/{self.p.id}/meshes/m.ply', b'maillage')
         for membre in (self.alice, self.bob, self.chloe):

@@ -57,3 +57,34 @@ class IdentifiantsMalFormesTests(Base):
                 self.assertEqual(self.alice.get('/api/jobs/', {'project': valeur}).status_code, 400)
         self.assertEqual(len(self.alice.get('/api/jobs/', {'project': self.p.id}).json()), 1)
         self.assertEqual(len(self.alice.get('/api/jobs/', {'project': ''}).json()), 1)     # filtre vide = pas de filtre
+
+
+class FichierDeMaillageDisparuTests(Base):
+    """Le maillage existe en base, son fichier n'est plus dans storage : 404,
+    comme le font déjà l'export et les suggestions."""
+
+    def setUp(self):
+        super().setUp()
+        self.storage.fichiers.clear()
+
+    def test_creation_et_retouche_d_une_partie(self):
+        avant = temporaires()
+        resp = self.alice.post(f'/api/meshes/{self.mesh.id}/parts/', {'name': 'C', 'face_ids': [4]}, format='json')
+        self.assertEqual(resp.status_code, 404)
+        self.assertIn('introuvable', resp.json()['detail'])
+        resp = self.alice.patch(f'/api/parts/{self.a.id}/', {'face_ids': [5]}, format='json')
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(Part.objects.count(), 2)
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.face_ids, [0, 1])
+        self.assertEqual(temporaires(), avant)
+        # Renommer ne lit pas le fichier : toujours possible.
+        self.assertEqual(self.alice.patch(f'/api/parts/{self.a.id}/', {'name': 'Capot'}, format='json').status_code, 200)
+
+    def test_les_vues_voisines_rendent_deja_404(self):
+        for chemin, params in ((f'/api/meshes/{self.mesh.id}/export/', {}),
+                               (f'/api/meshes/{self.mesh.id}/auto-orient/', {}),
+                               (f'/api/parts/{self.a.id}/suggest-axis/', {'other': self.b.id})):
+            with self.subTest(chemin=chemin):
+                self.assertEqual(self.alice.get(chemin, params).status_code, 404)
+        self.assertEqual(self.alice.post(f'/api/meshes/{self.mesh.id}/parts/suggest/', {}, format='json').status_code, 404)

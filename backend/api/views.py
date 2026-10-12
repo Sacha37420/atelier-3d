@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework import generics, status
-from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.exceptions import APIException, NotFound, ValidationError
 from rest_framework.response import Response
 
 from . import facade, permissions, reconstruction, repair, segmentation, storage_backend, storage_client, video_import
@@ -728,6 +728,10 @@ def _fit_and_set_primitive(part: Part) -> None:
             fit = segmentation.fit_primitive_to_faces(mesh_path, part.face_ids)
     except segmentation.SegmentationError:
         fit = None
+    except FileNotFoundError:
+        # Le maillage existe en base mais son fichier a disparu de storage :
+        # 404, comme l'export et les suggestions — pas une erreur 500.
+        raise NotFound("Fichier de maillage introuvable.")
     if fit:
         part.primitive_type = fit['primitive_type']
         part.primitive_params = fit['primitive_params']

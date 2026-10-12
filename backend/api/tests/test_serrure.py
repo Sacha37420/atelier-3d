@@ -2,6 +2,7 @@
 signés par une clé locale, passent par la classe d'authentification réelle."""
 import re
 import time
+from unittest import mock
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -9,9 +10,10 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from api import urls as api_urls
+from api.authentication import KeycloakJWTAuthentication
 from api.models import UserRecord
 
-from .helpers import ALICE, LabMixin, jeton
+from .helpers import ALICE, LabMixin, _RSA, jeton
 
 REFUS = (401, 403)
 
@@ -83,6 +85,41 @@ class SerrureTests(LabMixin, TestCase):
         tete, _, signature = jeton(groups=['developers']).split('.')
         _, corps_etranger, _ = jeton('mallory@ssolab.local').split('.')
         self.assertEqual(self.appel(f'{tete}.{corps_etranger}.{signature}').status_code, 403)
+
+    def _vrai_client_jwks(self, jwks=None, panne=None):
+        """Un vrai `PyJWKClient` (recherche de la clé par `kid` comprise) : seul
+        l'appel réseau `fetch_data` est remplacé."""
+        client = jwt.PyJWKClient('http://keycloak.test/realms/ssolab/protocol/openid-connect/certs')
+        fetch = mock.patch.object(client, 'fetch_data', side_effect=panne, return_value=jwks)
+        fetch.start()
+        self.addCleanup(fetch.stop)
+        patcher = mock.patch.object(KeycloakJWTAuthentication, '_get_jwks_client',
+                                    classmethod(lambda cls: client))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_cle_de_signature_inconnue_refusee_sans_erreur_500(self):
+        """`kid` absent du JWKS : PyJWKClientError n'hérite pas d'InvalidTokenError.
+        Un jeton forgé avec un `kid` quelconque faisait répondre 500 (corrigé par
+        l'architecte dans le gabarit, commit e1bb26b ici)."""
+        cle = jwt.algorithms.RSAAlgorithm.to_jwk(_RSA.public_key(), as_dict=True)
+        self._vrai_client_jwks({'keys': [{**cle, 'kid': 'cle-du-realm', 'use': 'sig', 'alg': 'RS256'}]})
+        entetes = lambda kid: jwt.encode(jwt.decode(jeton(), options={'verify_signature': False}),
+                                         _RSA, algorithm='RS256', headers={'kid': kid})
+        self.assertEqual(self.appel(entetes('cle-du-realm')).status_code, 200)     # le chemin réel fonctionne
+        for kid in ('cle-forgee', ''):
+            with self.subTest(kid=kid):
+                resp = self.appel(entetes(kid))
+                self.assertEqual(resp.status_code, 403)
+                self.assertIn('Token invalide', resp.json()['detail'])
+        self.assertEqual(self.appel(jeton()).status_code, 403)                     # jeton sans `kid` du tout
+
+    def test_keycloak_injoignable_refus_et_non_erreur_500(self):
+        self._vrai_client_jwks(panne=jwt.exceptions.PyJWKClientConnectionError('keycloak arrêté'))
+        resp = self.appel(jwt.encode({'email': ALICE, 'azp': 'atelier-3d', 'groups': ['developers'],
+                                      'exp': int(time.time()) + 300}, _RSA, algorithm='RS256',
+                                     headers={'kid': 'cle-du-realm'}))
+        self.assertEqual(resp.status_code, 403)
 
     def test_sans_email_refuse(self):
         resp = self.appel(jeton(email=None))

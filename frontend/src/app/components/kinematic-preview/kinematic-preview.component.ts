@@ -1,12 +1,15 @@
 import {
   Component, ElementRef, Input, OnChanges, OnDestroy, SimpleChanges, ViewChild,
-  AfterViewInit, NgZone, signal,
+  AfterViewInit, NgZone, signal, inject,
 } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Subscription } from 'rxjs';
 import { FormsModule } from '@angular/forms';
 import { DecimalPipe } from '@angular/common';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { AuthBlobService } from '../../core/auth-blob.service';
+import { loadGltf } from '../../core/gltf-source';
 import { Part, Joint } from '../../core/api.service';
 
 interface JointNode {
@@ -57,6 +60,12 @@ export class KinematicPreviewComponent implements AfterViewInit, OnChanges, OnDe
   private partGroups = new Map<number, THREE.Group>();
   private modelDiagonal = 1;
 
+  private http = inject(HttpClient);
+  private blobs = inject(AuthBlobService);
+  /** Lecture en cours (abandonnée si l'adresse change ou le composant disparaît). */
+  private loadSub?: Subscription;
+  private loadSeq = 0;
+
   constructor(private zone: NgZone) {}
 
   ngAfterViewInit(): void {
@@ -76,6 +85,8 @@ export class KinematicPreviewComponent implements AfterViewInit, OnChanges, OnDe
   }
 
   ngOnDestroy(): void {
+    this.loadSeq++;
+    this.loadSub?.unsubscribe();
     if (this.frameId) cancelAnimationFrame(this.frameId);
     this.resizeObserver?.disconnect();
     this.controls?.dispose();
@@ -134,9 +145,14 @@ export class KinematicPreviewComponent implements AfterViewInit, OnChanges, OnDe
     if (!this.meshUrl) return;
     this.loading.set(true);
     this.loadError.set(null);
-    new GLTFLoader().load(
+    this.loadSub?.unsubscribe();
+    const seq = ++this.loadSeq;
+    this.loadSub = loadGltf(
+      this.http,
+      this.blobs,
       this.meshUrl,
       (gltf) => {
+        if (seq !== this.loadSeq) return;
         let found: THREE.BufferGeometry | undefined;
         gltf.scene.traverse((obj) => {
           if (found) return;
@@ -156,8 +172,11 @@ export class KinematicPreviewComponent implements AfterViewInit, OnChanges, OnDe
         this.rebuildHierarchy();
         this.loading.set(false);
       },
-      undefined,
-      () => { this.loadError.set("Impossible de charger le maillage."); this.loading.set(false); },
+      () => {
+        if (seq !== this.loadSeq) return;
+        this.loadError.set("Impossible de charger le maillage.");
+        this.loading.set(false);
+      },
     );
   }
 

@@ -43,15 +43,14 @@ class KeycloakJWTAuthentication(BaseAuthentication):
         return cls._jwks_client
 
     def authenticate(self, request):
+        # En-tête seul. Le repli `?token=` (pour <img>/GLTFLoader) est retiré le
+        # 2026-10-31 (chantier « failles », I4) : il valait pour TOUTES les vues,
+        # et un jeton dans une URL finit dans l'historique, les journaux et le
+        # Referer. Le frontend lit désormais les fichiers par HttpClient.
         auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer '):
-            token = auth_header[7:]
-        else:
-            # Une balise <img>/GLTFLoader ne peut pas poser d'en-tête Authorization —
-            # fallback sur ?token=, utilisé uniquement par MediaView (cf. views.py).
-            token = request.GET.get('token', '')
-            if not token:
-                return None
+        if not auth_header.startswith('Bearer '):
+            return None
+        token = auth_header[7:]
 
         try:
             client = self._get_jwks_client()

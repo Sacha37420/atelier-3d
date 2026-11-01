@@ -335,7 +335,7 @@
           <div class="photo-grid">
             @for (photo of project.photos; track photo.id) {
               <div class="thumb" [class.resolved]="photo.pose_resolved" [class.unresolved]="photo.camera_pose === null && lastFinishedJob()?.kind === 'RECONSTRUCTION'">
-                <img [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
+                <img [appAuthSrc]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
                 <button type="button" class="thumb-remove" (click)="deletePhoto(photo.id)" title="Retirer">✕</button>
               </div>
             }
@@ -546,7 +546,7 @@
           <div class="photo-grid">
             @for (photo of project.photos; track photo.id) {
               <div class="thumb">
-                <img [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
+                <img [appAuthSrc]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
                 <button type="button" class="thumb-remove" (click)="deletePhoto(photo.id)" title="Retirer">✕</button>
               </div>
             }
@@ -964,7 +964,7 @@
               {{ mesh.is_watertight ? 'Watertight' : 'Non watertight' }}
             </span>
             @if (mesh.step_file) {
-              <a class="badge" [href]="mediaUrl(mesh.step_file)" target="_blank" rel="noopener">Télécharger le STEP</a>
+              <button type="button" class="badge" (click)="downloadMedia(mesh.step_file)">Télécharger le STEP</button>
             }
           </div>
         }

@@ -115,7 +115,7 @@
         <div class="photo-grid">
           @for (photo of resolvedPhotos(); track photo.id) {
             <div class="thumb" [class.active]="selectedPhotoId() === photo.id" (click)="openPhotoForLabeling(photo)">
-              <img [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
+              <img [appAuthSrc]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" loading="lazy" />
               @if (photo.region_count) {
                 <span class="thumb-badge">{{ photo.region_count }} régions</span>
               }
@@ -139,9 +139,9 @@
             </div>
 
             <div class="photo-label-stage" (click)="onPhotoClick($event)">
-              <img class="stage-photo" [src]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" />
+              <img class="stage-photo" [appAuthSrc]="mediaUrl(photo.file)" [alt]="'Photo ' + photo.order" />
               @if (photo.region_overlay) {
-                <img class="stage-overlay" [src]="mediaUrl(photo.region_overlay)" alt="" />
+                <img class="stage-overlay" [appAuthSrc]="mediaUrl(photo.region_overlay)" alt="" />
               }
             </div>
             <p class="hint">Clique une région pour la labelliser avec la classe sélectionnée ci-dessus.</p>

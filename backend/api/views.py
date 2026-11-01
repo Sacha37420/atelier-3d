@@ -988,10 +988,12 @@ class MediaView(APIView):
     sur storage, avec son propre token. Cette vue reste en place (fallback
     authentifié, ex. usage futur hors navigateur), mais aucun serializer ne
     produit plus de chemin qui y mène — le cloisonnement par projet ci-dessous
-    est donc défensif : sans lui, un chemin '/media/<path>?token=' devinable
-    (id de projet séquentiel) contournerait totalement le passage en privé par
-    défaut (Option A) en repassant par le compte de service, qui a accès à
-    tout.
+    est donc défensif : sans lui, un chemin '/media/<path>' devinable (id de
+    projet séquentiel) contournerait totalement le passage en privé par défaut
+    (Option A) en repassant par le compte de service, qui a accès à tout.
+
+    Jeton par l'en-tête Authorization seulement : le repli `?token=` de
+    KeycloakJWTAuthentication est retiré (2026-10-31, chantier « failles »).
     """
 
     def get(self, request, path):

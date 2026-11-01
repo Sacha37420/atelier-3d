@@ -126,12 +126,16 @@ class SerrureTests(LabMixin, TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertIn("'email'", resp.json()['detail'])
 
-    def test_le_jeton_en_parametre_d_url_subit_les_memes_controles(self):
-        self.assertEqual(self.appel(jeton(), en_parametre=True).status_code, 200)
-        for nom, tok in (('admin-cli', jeton(azp='admin-cli')), ('sans groupe', jeton(groups=[])),
-                         ('expiré', jeton(exp=int(time.time()) - 60))):
-            with self.subTest(cas=nom):
-                self.assertEqual(self.appel(tok, en_parametre=True).status_code, 403)
+    def test_le_jeton_en_parametre_d_url_est_refuse_partout(self):
+        """I4 (chantier « failles ») : `?token=` n'authentifie plus rien, ni une
+        vue de l'API ni /media/. Sans en-tête, DRF répond 403 (la classe
+        d'authentification ne déclare pas d'en-tête WWW-Authenticate)."""
+        valide = jeton()
+        for chemin in ('/api/me/', '/api/projects/', '/media/projects/1/photos/a.jpg'):
+            with self.subTest(chemin=chemin):
+                self.assertIn(self.appel(valide, chemin, en_parametre=True).status_code, REFUS)
+        self.assertEqual(self.appel(valide, '/api/projects/', en_parametre=True).status_code, 403)
+        self.assertEqual(self.storage.appels, [])   # rien n'a atteint storage
 
     def test_aucune_route_n_est_ouverte_sauf_les_trois_publiques(self):
         """Inventaire tiré de api/urls.py : toute route ajoutée sans protection

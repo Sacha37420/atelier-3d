@@ -146,9 +146,9 @@ class LabStorage(Storage):
         # conteneur storage-backend ne le voie, exactement comme
         # FORCE_SCRIPT_NAME/'atelier-3d-api' pour cette app, cf. settings.py).
         # C'est ApiService.mediaUrl() côté frontend (storageApiUrl, cf.
-        # nginx-entrypoint.sh) qui préfixe par l'origine correcte et ajoute
-        # `?token=` (le navigateur ne peut jamais poser d'en-tête Authorization
-        # sur un <img>/GLTFLoader). Sécurité : c'est désormais storage lui-même
+        # nginx-entrypoint.sh) qui préfixe par l'origine correcte ; le fichier est
+        # lu par HttpClient, jeton dans l'en-tête Authorization (plus de
+        # `?token=` depuis le 2026-10-31, chantier « failles »). Sécurité : c'est désormais storage lui-même
         # qui est le rempart — un partage PAR PROJET RACINE (namespace_for_project),
         # synchronisé sur Project.owner_email + ProjectShare à chaque changement
         # (cf. api/storage_client.sync_project_share), pas plus le partage

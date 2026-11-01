@@ -1,10 +1,13 @@
 import {
   Component, ElementRef, EventEmitter, Input, Output, ViewChild,
-  AfterViewInit, OnDestroy, OnChanges, SimpleChanges, NgZone, signal,
+  AfterViewInit, OnDestroy, OnChanges, SimpleChanges, NgZone, signal, inject,
 } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Subscription } from 'rxjs';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { AuthBlobService } from '../../core/auth-blob.service';
+import { loadGltf } from '../../core/gltf-source';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
 // Un raycast three.js par défaut teste chaque triangle un par un : sur un
@@ -138,6 +141,12 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
   private gridCellSize = 1;
   private painting = false;
 
+  private http = inject(HttpClient);
+  private blobs = inject(AuthBlobService);
+  /** Lecture en cours (abandonnée si l'adresse change ou le composant disparaît). */
+  private loadSub?: Subscription;
+  private loadSeq = 0;
+
   constructor(private zone: NgZone) {}
 
   ngAfterViewInit(): void {
@@ -177,6 +186,8 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
   }
 
   ngOnDestroy(): void {
+    this.loadSeq++;
+    this.loadSub?.unsubscribe();
     if (this.frameId) cancelAnimationFrame(this.frameId);
     this.resizeObserver?.disconnect();
     this.controls?.dispose();
@@ -262,9 +273,16 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
     this.parts.set([]);
     this.partsRoot = undefined;
 
-    new GLTFLoader().load(
+    // Une lecture précédente encore en vol est abandonnée ; un décodage déjà
+    // lancé (parse n'est pas annulable) est ignoré grâce au numéro de lecture.
+    this.loadSub?.unsubscribe();
+    const seq = ++this.loadSeq;
+    this.loadSub = loadGltf(
+      this.http,
+      this.blobs,
       url,
       (gltf) => {
+        if (seq !== this.loadSeq) return;
         this.modelRoot = gltf.scene;
         // Rendu double-face en sécurité : un maillage issu de reconstruction
         // photogrammétrique peut avoir des normales/un sens de bouclage
@@ -308,8 +326,8 @@ export class MeshViewerComponent implements AfterViewInit, OnDestroy, OnChanges 
         this.loading.set(false);
         if (this.paintMode) this.ensurePaintSetup();
       },
-      undefined,
       (err) => {
+        if (seq !== this.loadSeq) return;
         console.error('Échec du chargement du maillage', err);
         this.loadError.set("Impossible de charger le maillage (export glTF manquant ou invalide).");
         this.loading.set(false);

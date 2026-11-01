@@ -1,11 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { KeycloakService } from './keycloak.service';
-
-interface EnvWindow {
-  __env?: { apiUrl?: string; storageApiUrl?: string };
-}
+import { apiUrl, storageApiUrl } from './env';
 
 export type ProjectType = 'objet' | 'batiment' | 'assembly';
 export type AssemblyStatus = 'DRAFT' | 'SOLVED' | 'ERROR';
@@ -317,11 +313,9 @@ export interface CadAssemblyConstraint {
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private http = inject(HttpClient);
-  private kc = inject(KeycloakService);
 
   get base(): string {
-    return (window as unknown as EnvWindow).__env?.apiUrl
-      ?? 'http://localhost:8092';
+    return apiUrl();
   }
 
   /**
@@ -333,32 +327,28 @@ export class ApiService {
    * au lieu d'être proxiés par MediaView (backend de cette app).
    */
   get storageBase(): string {
-    return (window as unknown as EnvWindow).__env?.storageApiUrl
-      ?? 'http://localhost:8093';
+    // Même valeur que tokenBases() (core/env.ts) : une adresse rendue ici
+    // reçoit le jeton par l'intercepteur, une autre non.
+    return storageApiUrl() ?? 'http://localhost:8093';
   }
 
   /**
-   * URL absolue d'un fichier média (photo, maillage, glTF, STEP), utilisable
-   * telle quelle dans un <img>, un <a href> ou passée à GLTFLoader — pointe
+   * URL absolue d'un fichier média (photo, maillage, glTF, STEP) — pointe
    * directement sur l'app storage (ProjectSerializer/MeshSerializer/
    * PhotoSerializer renvoient un chemin storage relatif, cf.
    * api/storage_backend.LabStorage.url() côté backend), plus sur cette app.
-   * Le JWT part en paramètre d'URL : ni une balise <img> ni le fetch() interne
-   * de GLTFLoader ne peuvent poser d'en-tête Authorization.
    *
-   * ⚠ Dépend du fallback `?token=` de KeycloakJWTAuthentication côté storage
-   * (storage/backend/api/authentication.py) — chantier fondation du lot
-   * « sharing-model », pas encore vérifié livré au moment de ce commit. Sans
-   * lui, storage ne lit QUE l'en-tête Authorization : toute image/viewer 3D
-   * utilisant cette URL recevra 401 tant qu'il n'est pas déployé (un fetch()
-   * avec en-tête explicite, lui, fonctionnerait déjà). Revérifier avant de
-   * considérer cette fonction opérationnelle.
+   * L'adresse ne porte JAMAIS le jeton (chantier « failles », 2026-10-31 :
+   * storage n'accepte plus `?token=`). Elle ne s'utilise donc pas telle quelle
+   * dans un <img src>, un <a href> ou GLTFLoader.load() : le fichier est lu par
+   * HttpClient (jeton posé par l'intercepteur, seulement vers tokenBases()) —
+   * `<img [appAuthSrc]>` (shared/auth-src.directive.ts), AuthBlobService.download()
+   * pour un téléchargement, et HttpClient + GLTFLoader.parse() dans les viewers 3D.
    */
   mediaUrl(path: string | null): string {
     if (!path) return '';
     if (/^https?:\/\//.test(path)) return path;
-    const token = this.kc.getToken();
-    return `${this.storageBase}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    return `${this.storageBase}${path}`;
   }
 
   getMe(): Observable<unknown> {

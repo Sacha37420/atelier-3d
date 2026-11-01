@@ -55,14 +55,17 @@ explication sur la page projet (`to_do_atelier_3d.md`, « correctif immédiat »
 - [ ] Piste A : un `cameras.sfm` importé produit `has_resolved_poses = true`
 **Vérifié le :**
 
-## Lot 4 — Jeton hors des URL et gabarit front   ·   statut : à faire
+## Lot 4 — Jeton hors des URL et gabarit front   ·   statut : en cours
 **Objectif :** même comportement que le gabarit corrigé (T3), sans JWT dans les URL (T4).
 **Tâches :**
-- [ ] `?token=` vers `storage` (`core/api.service.ts:361`) → `fetch` + `Blob` ; mettre à jour la docstring `mediaUrl` (l. 349-355), périmée
-- [ ] Polices en chemin relatif (`styles.scss:3-11`) ; `tokenBases()` ; PKCE. Le `redirectUri` est déjà sur la page courante.
+- [x] `?token=` vers `storage` (`core/api.service.ts`) → HttpClient + `Blob` (`<img [appAuthSrc]>`, `AuthBlobService.download` pour le STEP, `HttpClient` + `GLTFLoader.parse` dans les deux viewers 3D, `core/gltf-source.ts`) ; docstring `mediaUrl` réécrite
+- [x] Repli `?token=` retiré de `api/authentication.py` (il valait pour toutes les vues) ; `MediaView` en en-tête seul
+- [x] Polices en chemin relatif (`styles.scss`) ; `tokenBases()` (API de l'app + storage) ; PKCE ; `redirectUri` par `loginRedirectUri` (copie de lab-admin)
+- [x] Ports publiés liés à `${LAB_BIND_ADDR:-127.0.0.1}` (`docker-compose.yml`)
 **Tests à passer avant de clore le lot :**
-- [ ] Aucune requête porte `token=` ; les WOFF2 répondent 200 ; `code_challenge` est présent à la connexion
-**Vérifié le :**
+- [x] Backend : `?token=` refusé sur `/api/…` et `/media/…` (403, rien n'atteint storage) ; en-tête de la propriétaire → 200 ; étranger → 404 (`test_serrure`, `test_autorisations`)
+- [ ] Aucune requête porte `token=` ; les WOFF2 répondent 200 ; `code_challenge` est présent à la connexion (navigateur, après déploiement)
+**Vérifié le :** 2026-10-31 — `chantiers/tests/essai.sh atelier-3d` : 175 tests OK (1 échec attendu) ; image `atelier-3d-frontend:candidat` construite (polices en `./media/…woff2`, `S256` dans le bundle, aucun `token=` hors keycloak-js) ; tests navigateur à faire — non déployé
 
 ## Lot 5 — Ménage et chemin à portes   ·   statut : à faire
 **Objectif :** code juste, déploiement par le moteur (T1).

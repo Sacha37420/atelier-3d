@@ -6,6 +6,7 @@ import {
   SEMANTIC_CLASS_LABELS, FacadeEstimate, Job,
 } from '../../core/api.service';
 import { MeshViewerComponent } from '../../components/mesh-viewer/mesh-viewer.component';
+import { AuthSrcDirective } from '../../shared/auth-src.directive';
 
 const POLL_INTERVAL_MS = 2000;
 const CLASS_NAMES: SemanticClassName[] = ['mur', 'fenetre', 'porte', 'toit'];
@@ -22,7 +23,7 @@ const CLASS_NAMES: SemanticClassName[] = ['mur', 'fenetre', 'porte', 'toit'];
 @Component({
   selector: 'app-batiments',
   standalone: true,
-  imports: [FormsModule, RouterLink, MeshViewerComponent],
+  imports: [FormsModule, RouterLink, MeshViewerComponent, AuthSrcDirective],
   templateUrl: './batiments.component.html',
   styleUrl: './batiments.component.scss',
 })

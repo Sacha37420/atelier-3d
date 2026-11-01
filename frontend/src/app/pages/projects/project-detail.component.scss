@@ -35,6 +35,15 @@
   &.warning { background: var(--warning-tint); color: var(--warning); }
 }
 
+// Téléchargement du STEP : un bouton (lecture par HttpClient, jeton dans
+// l'en-tête), plus un lien direct vers storage.
+button.badge {
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+  min-height: 44px;
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--border);

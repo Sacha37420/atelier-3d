@@ -10,6 +10,8 @@ import {
   OutdatedInstanceInfo,
 } from '../../core/api.service';
 import { MeshViewerComponent } from '../../components/mesh-viewer/mesh-viewer.component';
+import { AuthSrcDirective } from '../../shared/auth-src.directive';
+import { AuthBlobService } from '../../core/auth-blob.service';
 
 const POLL_INTERVAL_MS = 2000;
 const PRESET_LABELS: Record<Preset, string> = { rapide: 'Rapide', equilibre: 'Équilibré', precis: 'Précis' };
@@ -35,12 +37,13 @@ export type InitMode = 'photos' | 'cao' | 'photos_client';
 @Component({
   selector: 'app-project-detail',
   standalone: true,
-  imports: [FormsModule, RouterLink, MeshViewerComponent, DecimalPipe],
+  imports: [FormsModule, RouterLink, MeshViewerComponent, AuthSrcDirective, DecimalPipe],
   templateUrl: './project-detail.component.html',
   styleUrl: './project-detail.component.scss',
 })
 export class ProjectDetailComponent implements OnDestroy {
   private api = inject(ApiService);
+  private blobs = inject(AuthBlobService);
   private route = inject(ActivatedRoute);
 
   readonly presetLabels = PRESET_LABELS;
@@ -218,6 +221,15 @@ export class ProjectDetailComponent implements OnDestroy {
 
   mediaUrl(path: string | null): string {
     return this.api.mediaUrl(path);
+  }
+
+  /** Télécharge un fichier du projet (STEP…) avec le jeton en en-tête, jamais dans l'URL. */
+  downloadMedia(path: string | null): void {
+    if (!path) return;
+    const brut = path.split('?')[0].split('/').pop() || 'fichier';
+    let name = brut;
+    try { name = decodeURIComponent(brut); } catch { /* nom laissé tel quel */ }
+    this.blobs.download(this.api.mediaUrl(path), name);
   }
 
   reload(): void {

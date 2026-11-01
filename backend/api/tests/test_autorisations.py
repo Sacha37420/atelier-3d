@@ -19,7 +19,7 @@ from api.models import (
     Photo, PhotoLabel, Project, ProjectShare, SemanticClass,
 )
 
-from .helpers import ALICE, BOB, CHLOE, DAVID, LabMixin, temporaires
+from .helpers import ALICE, BOB, CHLOE, DAVID, LabMixin, jeton, temporaires
 
 REFUS_ECRITURE = (403, 404)
 
@@ -507,6 +507,20 @@ class FichiersTests(Base):
         self.assertEqual(self.david.get(f'/media/{chemin}').status_code, 404)
         self.assertEqual(self.storage.appels, [])       # refusé AVANT tout appel du compte de service
         self.assertEqual(APIClient().get(f'/media/{chemin}').status_code, 403)
+
+    def test_media_refuse_le_jeton_en_parametre_d_url(self):
+        """I4 : le jeton valide de la propriétaire, passé en `?token=` sans
+        en-tête, n'ouvre plus /media/ (403 : non authentifié) ; le même jeton en
+        en-tête, si (200) ; un étranger en en-tête reçoit 404 (projet caché)."""
+        chemin = self.deposer(self.p, f'projects/{self.p.id}/photos/p.jpg', b'photo')
+        self.storage.appels.clear()
+        resp = APIClient().get(f'/media/{chemin}', {'token': jeton(ALICE)})
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(self.storage.appels, [])
+        resp = self.alice.get(f'/media/{chemin}')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(b''.join(resp.streaming_content), b'photo')
+        self.assertEqual(self.david.get(f'/media/{chemin}').status_code, 404)
 
     def test_media_chemins_hors_projet_absents_ou_storage_arrete(self):
         self.assertEqual(self.alice.get('/media/secrets/passwd').status_code, 404)

@@ -47,7 +47,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8092:8000"
+      - "${LAB_BIND_ADDR:-127.0.0.1}:8092:8000"
     networks:
       - sso-net
       - dev-net
@@ -96,7 +96,7 @@ services:
       PORT_FRONTEND: ${PORT_FRONTEND:-}
       STORAGE_PORT_BACKEND: ${STORAGE_PORT_BACKEND:-}
     ports:
-      - "4210:80"
+      - "${LAB_BIND_ADDR:-127.0.0.1}:4210:80"
     networks:
       - sso-net
     labels:

@@ -64,7 +64,7 @@ explication sur la page projet (`to_do_atelier_3d.md`, « correctif immédiat »
 - [x] Ports publiés liés à `${LAB_BIND_ADDR:-127.0.0.1}` (`docker-compose.yml`)
 **Tests à passer avant de clore le lot :**
 - [x] Backend : `?token=` refusé sur `/api/…` et `/media/…` (403, rien n'atteint storage) ; en-tête de la propriétaire → 200 ; étranger → 404 (`test_serrure`, `test_autorisations`)
-- [ ] Aucune requête porte `token=` ; les WOFF2 répondent 200 ; `code_challenge` est présent à la connexion (navigateur, après déploiement)
+- [x] Aucune requête porte `token=` ; les WOFF2 répondent 200 ; `code_challenge` est présent à la connexion (navigateur, après déploiement) — vérifié le 2026-11-01 (lab-runner, `e2e_member`)
 **Vérifié le :** 2026-10-31 — `chantiers/tests/essai.sh atelier-3d` : 175 tests OK (1 échec attendu) ; image `atelier-3d-frontend:candidat` construite (polices en `./media/…woff2`, `S256` dans le bundle, aucun `token=` hors keycloak-js) ; tests navigateur à faire — non déployé
 
 ## Lot 5 — Ménage et chemin à portes   ·   statut : à faire

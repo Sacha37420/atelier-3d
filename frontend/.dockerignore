@@ -1,0 +1,9 @@
+# Dépendances et artefacts : réinstallés/recompilés dans l'image.
+# Évite surtout que `COPY . .` n'écrase le node_modules issu de `npm install`.
+node_modules
+dist
+.angular
+.git
+.gitignore
+Dockerfile
+.dockerignore

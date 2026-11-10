@@ -55,7 +55,7 @@ explication sur la page projet (`to_do_atelier_3d.md`, « correctif immédiat »
 - [ ] Piste A : un `cameras.sfm` importé produit `has_resolved_poses = true`
 **Vérifié le :**
 
-## Lot 4 — Jeton hors des URL et gabarit front   ·   statut : en cours
+## Lot 4 — Jeton hors des URL et gabarit front   ·   statut : livré
 **Objectif :** même comportement que le gabarit corrigé (T3), sans JWT dans les URL (T4).
 **Tâches :**
 - [x] `?token=` vers `storage` (`core/api.service.ts`) → HttpClient + `Blob` (`<img [appAuthSrc]>`, `AuthBlobService.download` pour le STEP, `HttpClient` + `GLTFLoader.parse` dans les deux viewers 3D, `core/gltf-source.ts`) ; docstring `mediaUrl` réécrite
@@ -66,6 +66,8 @@ explication sur la page projet (`to_do_atelier_3d.md`, « correctif immédiat »
 - [x] Backend : `?token=` refusé sur `/api/…` et `/media/…` (403, rien n'atteint storage) ; en-tête de la propriétaire → 200 ; étranger → 404 (`test_serrure`, `test_autorisations`)
 - [x] Aucune requête porte `token=` ; les WOFF2 répondent 200 ; `code_challenge` est présent à la connexion (navigateur, après déploiement) — vérifié le 2026-11-01 (lab-runner, `e2e_member`)
 **Vérifié le :** 2026-10-31 — `chantiers/tests/essai.sh atelier-3d` : 175 tests OK (1 échec attendu) ; image `atelier-3d-frontend:candidat` construite (polices en `./media/…woff2`, `S256` dans le bundle, aucun `token=` hors keycloak-js) ; tests navigateur à faire — non déployé
+**Relecture du 2026-11-08 (nuit) :** passé à « livré » : toutes les cases sont cochées et le commit
+`3f61d6d` est dans la version en service (`ae2298b`, chantier « failles », 2026-11-01).
 
 ## Lot 5 — Ménage et chemin à portes   ·   statut : à faire
 **Objectif :** code juste, déploiement par le moteur (T1).
@@ -75,8 +77,8 @@ explication sur la page projet (`to_do_atelier_3d.md`, « correctif immédiat »
 - [ ] Ⓟ Rattraper les fichiers et partages `atelier-3d-project-<id>` des projets supprimés avant `f203b47`
 - [ ] `README.md` : modes d'initialisation, modules, ressources (scratch, temps de calcul)
 **Tests à passer avant de clore le lot :**
-- [ ] `validate-app.sh atelier-3d --quality-only` vert (après correction du faux positif `[service-account]` côté cadriciel)
-- [ ] Cloisonnement `ok` par le moteur
+- [x] `validate-app.sh atelier-3d --quality-only` vert (après correction du faux positif `[service-account]` côté cadriciel) — code 0 le 2026-11-08 (copie de ce dossier, outil `valq.sh`)
+- [x] Cloisonnement `ok` par le moteur — verdict `ok`, origine `moteur`, 2026-11-01 (`<LAB_STATE_DIR>/tests/atelier-3d.json`)
 **Vérifié le :**
 
 ## Mise en service — chantier « failles » (2026-11-01)

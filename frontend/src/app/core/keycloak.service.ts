@@ -77,6 +77,9 @@ export class KeycloakService {
   }
 
   logout(): void {
-    this.kc.logout({ redirectUri: window.location.origin });
+    // Retour sous le préfixe de l'app (<base href>, ex. /<app>/) : la racine du domaine
+    // n'est pas une URI de retour du client depuis --prune-uris (LOGOUT_ERROR
+    // invalid_redirect_uri, constaté sur peripheriques le 2026-11-08).
+    this.kc.logout({ redirectUri: document.baseURI });
   }
 }

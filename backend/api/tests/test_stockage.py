@@ -234,9 +234,10 @@ class ReplicationDesPartagesTests(Base):
 
     def test_cree_le_partage_et_y_met_le_proprietaire_en_ecriture(self):
         storage_client.sync_project_share(self.p)
-        self.assertEqual(self.storage.partages, {self.ns: {ALICE: 'write'}})
+        self.assertEqual(self.storage.partages, {self.ns: {ALICE: 'write'}, storage_client.CONTAINER: {}})
         storage_client.sync_project_share(self.p)       # rejouable
-        self.assertEqual(len(self.storage.appels_vers('/api/shares/', 'POST')), 2)   # création + 1 membre
+        # conteneur + création + 1 membre ; rien de plus au second passage.
+        self.assertEqual(len(self.storage.appels_vers('/api/shares/', 'POST')), 3)
 
     def test_aligne_ajouts_roles_et_retraits(self):
         self.storage.partages[self.ns] = {ALICE: 'read', BOB: 'read', 'ancien@ssolab.local': 'write'}

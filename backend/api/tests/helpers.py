@@ -105,6 +105,11 @@ class FauxStorage:
     def __init__(self):
         self.fichiers: dict[tuple[str, str], bytes] = {}
         self.partages: dict[str, dict[str, str]] = {}
+        # Hiérarchie (contrat storage-hierarchie) : parent de chacun de NOS
+        # partages, et partages d'un autre propriétaire (403 / 400 `name`).
+        self.parents: dict[str, str | None] = {}
+        self.etrangers: set[str] = set()
+        self.refuser_parent = False    # storage refuse tout `parent` (400 `parent`)
         self.appels: list[tuple[str, str]] = []
         self.arrete = False            # storage injoignable
         self.keycloak_arrete = False   # Keycloak injoignable
@@ -112,7 +117,7 @@ class FauxStorage:
         self.dernier_secret = None
 
     def brancher(self, cas) -> 'FauxStorage':
-        for verbe in ('get', 'post', 'delete'):
+        for verbe in ('get', 'post', 'delete', 'patch'):
             patcher = mock.patch.object(
                 storage_client.requests, verbe,
                 side_effect=functools.partial(self._servir, verbe.upper()),
@@ -167,21 +172,43 @@ class FauxStorage:
             if verbe == 'DELETE':
                 del self.fichiers[cle]
                 return FausseReponse(204)
+        if chemin == '/api/shares/' and verbe == 'GET':
+            return FausseReponse(200, {
+                'owned': [{'name': n, 'parent': self.parents.get(n)} for n in sorted(self.partages)],
+                'member_of': [], 'tree': [],
+            })
         if chemin == '/api/shares/' and verbe == 'POST':
-            if data['name'] in self.partages:
+            nom, parent = data['name'], (data.get('parent') or None)
+            if nom in self.partages or nom in self.etrangers:
                 return FausseReponse(400, {'name': ['existe déjà']})
-            self.partages[data['name']] = {}
-            return FausseReponse(201, {'name': data['name']})
+            if parent is not None and (self.refuser_parent or parent not in self.partages):
+                return FausseReponse(400, {'parent': ['refusé']})
+            self.partages[nom] = {}
+            self.parents[nom] = parent
+            return FausseReponse(201, {'name': nom, 'parent': parent})
+        if (m := re.fullmatch(r'/api/shares/([^/]+)/', chemin)) and verbe == 'PATCH':
+            ns, parent = m.group(1), (data.get('parent') or None)
+            if ns in self.etrangers:
+                return FausseReponse(403)
+            if ns not in self.partages:
+                return FausseReponse(404)
+            if parent is not None and (self.refuser_parent or parent not in self.partages):
+                return FausseReponse(400, {'parent': ['refusé']})
+            self.parents[ns] = parent
+            return FausseReponse(200, {'name': ns, 'parent': parent})
         if (m := re.fullmatch(r'/api/shares/([^/]+)/', chemin)) and verbe == 'DELETE':
             ns = m.group(1)             # comme storage : le partage emporte ses fichiers
             if ns not in self.partages:
                 return FausseReponse(404)
             del self.partages[ns]
+            self.parents.pop(ns, None)
             for cle in [c for c in self.fichiers if c[0] == ns]:
                 del self.fichiers[cle]
             return FausseReponse(204)
         if m := re.fullmatch(r'/api/shares/([^/]+)/members/', chemin):
             ns = m.group(1)
+            if ns in self.etrangers:
+                return FausseReponse(403)
             if ns not in self.partages:
                 return FausseReponse(404)
             if verbe == 'GET':
@@ -232,6 +259,7 @@ class LabMixin:
     @staticmethod
     def _oublier_le_jeton_de_service() -> None:
         storage_client._token_cache.update(value='', exp=0.0)
+        storage_client._container_ready = False
 
     # ── identités ────────────────────────────────────────────────────────────
     def client_de(self, email=ALICE, groups=('developers',), **claims) -> APIClient:

@@ -41,6 +41,28 @@ def boite_step() -> bytes:
         return chemin.read_bytes()
 
 
+def triangle_bin() -> bytes:
+    """Tampon glTF d'un triangle : 3 sommets float32, 3 indices uint16 (+ bourrage)."""
+    import struct
+    return struct.pack('<9f', 0, 0, 0, 1, 0, 0, 0, 1, 0) + struct.pack('<3H', 0, 1, 2) + b'\0\0'
+
+
+def triangle_gltf(uri: str) -> str:
+    """glTF dont l'unique tampon est le fichier compagnon `uri`."""
+    return json.dumps({
+        'asset': {'version': '2.0'},
+        'buffers': [{'uri': uri, 'byteLength': 44}],
+        'bufferViews': [{'buffer': 0, 'byteOffset': 0, 'byteLength': 36},
+                        {'buffer': 0, 'byteOffset': 36, 'byteLength': 6}],
+        'accessors': [
+            {'bufferView': 0, 'componentType': 5126, 'count': 3, 'type': 'VEC3',
+             'min': [0, 0, 0], 'max': [1, 1, 0]},
+            {'bufferView': 1, 'componentType': 5123, 'count': 3, 'type': 'SCALAR'}],
+        'meshes': [{'primitives': [{'attributes': {'POSITION': 0}, 'indices': 1}]}],
+        'nodes': [{'mesh': 0}], 'scenes': [{'nodes': [0]}], 'scene': 0,
+    })
+
+
 def jpeg(largeur=64, hauteur=48) -> bytes:
     tampon = io.BytesIO()
     Image.new('RGB', (largeur, hauteur), (120, 90, 60)).save(tampon, format='JPEG')
@@ -341,6 +363,27 @@ class TachesTests(Base):
         self.assertEqual(self.jouer(tasks.run_mesh_import, job).status, Job.ERROR)
         self.assertEqual(Mesh.objects.count(), 0)
         self.assertEqual(self.storage.fichiers, {})
+
+    def test_import_gltf_lit_son_compagnon_dans_l_envoi(self):
+        job = self.job(Job.MESH_IMPORT, primary_filename='piece.gltf')
+        (self.travail(job) / 'piece.bin').write_bytes(triangle_bin())
+        (self.travail(job) / 'piece.gltf').write_text(triangle_gltf('piece.bin'))
+        job = self.jouer(tasks.run_mesh_import, job)
+        self.assertEqual(job.status, Job.DONE, job.message)
+        self.assertEqual(Mesh.objects.get(job=job).vertex_count, 3)
+
+    def test_import_ne_lit_aucun_compagnon_hors_de_l_envoi(self):
+        # Le glTF nomme ses compagnons par un chemin libre : ni chemin absolu, ni
+        # remontée ne doivent faire lire un fichier qui n'a pas été envoyé.
+        dehors = self.travail(self.job(Job.MESH_IMPORT)).parent / 'hors-envoi.bin'
+        dehors.write_bytes(triangle_bin())
+        for uri in (str(dehors), f'../{dehors.name}'):
+            with self.subTest(uri=uri):
+                job = self.job(Job.MESH_IMPORT, primary_filename='piece.gltf')
+                (self.travail(job) / 'piece.gltf').write_text(triangle_gltf(uri))
+                job = self.jouer(tasks.run_mesh_import, job)
+                self.assertEqual(job.status, Job.ERROR)
+                self.assertFalse(Mesh.objects.filter(job=job).exists())
 
     def test_storage_arrete_pendant_l_export_le_job_finit_en_erreur_et_libere_le_verrou(self):
         job = self.job(Job.MESH_IMPORT, primary_filename='boite.ply')

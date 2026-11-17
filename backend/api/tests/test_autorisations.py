@@ -540,6 +540,32 @@ class FichiersTests(Base):
         for _, url in self.storage.appels_vers('/content/'):
             self.assertIn(f'/api/files/{self.espace(self.p)}/', url)
 
+    def test_media_hors_image_part_en_piece_jointe(self):
+        chemin = self.deposer(self.p, f'projects/{self.p.id}/photos/page.html', b'<script>')
+        resp = self.alice.get(f'/media/{chemin}')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['X-Content-Type-Options'], 'nosniff')
+        self.assertEqual(resp['Content-Disposition'], 'attachment')
+
+    def test_media_refuse_les_remontees_avant_tout_appel(self):
+        """`requests` résout les `..` d'une URL : un chemin à remontées sortait du
+        partage du projet contrôlé. Refusé avant tout appel du compte de service."""
+        secret = self.projet(DAVID)
+        self.deposer(secret, f'projects/{secret.id}/meshes/m.ply', b'secret')
+        self.storage.appels.clear()
+        remontee = '../' * 4
+        for chemin in (
+            f'projects/{self.p.id}/{remontee}{self.espace(secret)}/content/projects/{secret.id}/meshes/m.ply',
+            f'projects/{self.p.id}/./meshes/m.ply',
+            f'projects/{self.p.id}//meshes/m.ply',
+            f'projects/{self.p.id}/meshes/m.ply%3F',
+        ):
+            with self.subTest(chemin=chemin):
+                self.assertEqual(self.alice.get(f'/media/{chemin}').status_code, 404)
+        self.assertEqual(self.storage.appels_vers('/content/'), [])
+        chemin = self.deposer(self.p, f'projects/{self.p.id}/meshes/m.ply', b'maillage')
+        self.assertEqual(self.alice.get(f'/media/{chemin}').status_code, 200)
+
 
 class ExportTests(Base):
     """Export d'impression : échelle obligatoire, orientation, unité = mm."""

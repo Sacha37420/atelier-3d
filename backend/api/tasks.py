@@ -13,6 +13,7 @@ Pipeline et correctifs repris tels quels du spike technique Lot 0
   - Le bug `_FORTIFY_SOURCE` d'OpenMVS (`Util::formatTime`) est corrigé à la
     compilation (backend/Dockerfile), rien à faire ici.
 """
+import os
 import re
 import subprocess
 import time
@@ -22,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import trimesh
 from celery import shared_task
+from trimesh.resolvers import FilePathResolver
 from django.core.files import File
 from django.db.models import Max
 from PIL import Image, ImageOps
@@ -39,6 +41,31 @@ from .reconstruction import PRESETS, DEFAULT_PRESET
 
 class ReconstructionError(Exception):
     """Erreur métier (photos insuffisantes, SfM en échec…) — message affichable tel quel."""
+
+
+class WorkdirResolver(FilePathResolver):
+    """Fichiers compagnons d'un maillage importé (.mtl, .bin, textures) : lus
+    dans le répertoire de travail du job, jamais ailleurs.
+
+    Un glTF ou un OBJ envoyé par l'utilisateur désigne ses compagnons par un
+    chemin libre ; le résolveur par défaut de trimesh 4.x le suivait tel quel
+    (chemin absolu, `../`) et versait le fichier lu dans le maillage rendu.
+    `requirements.txt` admet encore trimesh 4 : la borne est tenue ici."""
+
+    def __init__(self, source, root=None):
+        super().__init__(source)
+        self.root = Path(root or self.parent).resolve()
+
+    def namespaced(self, namespace):
+        return WorkdirResolver(os.path.join(self.parent, namespace), root=self.root)
+
+    def get(self, name):
+        name = str(name).strip()
+        for candidate in (name, name.lstrip('/'), os.path.split(name)[-1]):
+            path = (Path(self.parent) / candidate).resolve()
+            if path.is_relative_to(self.root) and path.is_file():
+                return path.read_bytes()
+        raise FileNotFoundError(f'Fichier compagnon introuvable dans l’envoi : {name}')
 
 
 def _run(cmd: list) -> None:
@@ -318,7 +345,8 @@ def run_mesh_import(self, job_id: int):
             )
 
         job.set_state(progress=30, message="Lecture du maillage (trimesh)…")
-        geom = trimesh.load(str(primary_path), process=False, force='mesh')
+        geom = trimesh.load(str(primary_path), process=False, force='mesh',
+                            resolver=WorkdirResolver(str(primary_path), root=workdir))
         if isinstance(geom, trimesh.Scene):
             geom = trimesh.util.concatenate(geom.dump())
         if not hasattr(geom, 'vertices') or len(geom.vertices) == 0:

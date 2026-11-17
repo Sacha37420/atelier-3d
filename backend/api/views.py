@@ -972,6 +972,21 @@ class JobDetailView(APIView):
         return Response(JobSerializer(job).data)
 
 
+#: Types servis en ligne par /media/ ; tout autre part en pièce jointe.
+_INLINE_MEDIA_TYPES = frozenset({'image/jpeg', 'image/png', 'image/gif', 'image/webp'})
+
+
+def _is_plain_storage_path(path: str) -> bool:
+    """Chemin sans segment vide, `.` ni `..`, ni caractère qui changerait l'URL.
+
+    Le contrôle d'accès porte sur le projet du préfixe `projects/<id>/`, mais
+    `requests` résout les `..` de l'URL avant de l'envoyer : assez de remontées
+    et le compte de service lisait dans le partage storage d'un autre projet."""
+    if any(c in path for c in '\\%?#\x00'):
+        return False
+    return all(segment not in ('', '.', '..') for segment in path.split('/'))
+
+
 class MediaView(APIView):
     """
     GET /media/<path> — photos et maillages, derrière la même authentification
@@ -998,7 +1013,7 @@ class MediaView(APIView):
 
     def get(self, request, path):
         project_id = storage_backend.project_id_from_path(path)
-        if project_id is None:
+        if project_id is None or not _is_plain_storage_path(path):
             return Response(status=status.HTTP_404_NOT_FOUND)
         project = get_object_or_404(Project, pk=project_id)
         permissions.check_read(project, request)
@@ -1009,10 +1024,15 @@ class MediaView(APIView):
         except storage_client.StorageClientError as exc:
             return Response({'detail': f'Stockage indisponible : {exc}'},
                             status=status.HTTP_502_BAD_GATEWAY)
-        return StreamingHttpResponse(
-            upstream.iter_content(chunk_size=65536),
-            content_type=upstream.headers.get('Content-Type', 'application/octet-stream'),
-        )
+        content_type = upstream.headers.get('Content-Type', 'application/octet-stream')
+        response = StreamingHttpResponse(upstream.iter_content(chunk_size=65536),
+                                         content_type=content_type)
+        # Le type suit le nom choisi à l'envoi (une « photo » `.html` est du
+        # text/html) : hors des images, jamais rendu comme page sur cette origine.
+        response['X-Content-Type-Options'] = 'nosniff'
+        if content_type.split(';', 1)[0].strip().lower() not in _INLINE_MEDIA_TYPES:
+            response['Content-Disposition'] = 'attachment'
+        return response
 
 
 # ──────────────────────────────────────────────────────────────────────────────

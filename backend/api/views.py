@@ -1,4 +1,5 @@
 import logging
+import math
 import tempfile
 import uuid
 from pathlib import Path
@@ -67,7 +68,9 @@ def api_exception_handler(exc, context):
     indisponible », pas une erreur 500 anonyme. Les vues qui ont leur propre
     traitement (partages, /media/, routes publiques, purges) ne passent pas ici."""
     if isinstance(exc, storage_client.StorageClientError):
-        exc = StorageUnavailable(f'Stockage indisponible : {exc}')
+        # Message fixe : l'erreur d'origine porte l'adresse interne de storage.
+        logger.warning('Appel storage échoué : %s', exc)
+        exc = StorageUnavailable()
     return drf_exception_handler(exc, context)
 
 
@@ -332,7 +335,9 @@ class ProjectShareListCreateView(APIView):
                 )
                 storage_client.sync_project_share(project)
         except storage_client.StorageClientError as exc:
-            raise StorageUnavailable(f'Stockage indisponible : {exc}')
+            # Message fixe : l'erreur d'origine porte l'adresse interne de storage.
+            logger.warning('Synchronisation storage échouée : %s', exc)
+            raise StorageUnavailable() from exc
         return Response(ProjectShareSerializer(share).data, status=status.HTTP_201_CREATED)
 
 
@@ -356,7 +361,9 @@ class ProjectShareDetailView(APIView):
                 share.save(update_fields=['role'])
                 storage_client.sync_project_share(share.project)
         except storage_client.StorageClientError as exc:
-            raise StorageUnavailable(f'Stockage indisponible : {exc}')
+            # Message fixe : l'erreur d'origine porte l'adresse interne de storage.
+            logger.warning('Synchronisation storage échouée : %s', exc)
+            raise StorageUnavailable() from exc
         return Response(ProjectShareSerializer(share).data)
 
     def delete(self, request, pk):
@@ -367,7 +374,9 @@ class ProjectShareDetailView(APIView):
                 share.delete()
                 storage_client.sync_project_share(project)
         except storage_client.StorageClientError as exc:
-            raise StorageUnavailable(f'Stockage indisponible : {exc}')
+            # Message fixe : l'erreur d'origine porte l'adresse interne de storage.
+            logger.warning('Synchronisation storage échouée : %s', exc)
+            raise StorageUnavailable() from exc
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -737,6 +746,21 @@ def _fit_and_set_primitive(part: Part) -> None:
         part.primitive_params = None
 
 
+def _face_ids_error(face_ids, mesh: Mesh) -> str | None:
+    """Lot 2 : `face_ids` est une liste non vide d'indices de faces de CE
+    maillage. Un indice mal formé (texte, flottant, négatif) ou hors du
+    maillage faisait échouer l'ajustement de primitive en erreur 500.
+    `face_count` n'est pas toujours connu (maillage ancien) : la borne haute
+    n'est alors pas contrôlée."""
+    if not isinstance(face_ids, list) or not face_ids:
+        return "'face_ids' doit être une liste non vide."
+    if any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in face_ids):
+        return "'face_ids' ne doit contenir que des numéros de face (entiers positifs ou nuls)."
+    if mesh.face_count is not None and max(face_ids) >= mesh.face_count:
+        return f"'face_ids' désigne une face absente de ce maillage ({mesh.face_count} faces)."
+    return None
+
+
 class PartListCreateView(APIView):
     """
     GET  /api/meshes/<mesh_id>/parts/ — liste des parties d'un maillage.
@@ -759,8 +783,8 @@ class PartListCreateView(APIView):
         face_ids = request.data.get('face_ids')
         if not name:
             return Response({'detail': "Le champ 'name' est requis."}, status=status.HTTP_400_BAD_REQUEST)
-        if not isinstance(face_ids, list) or not face_ids:
-            return Response({'detail': "'face_ids' doit être une liste non vide."}, status=status.HTTP_400_BAD_REQUEST)
+        if error := _face_ids_error(face_ids, mesh):
+            return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
 
         part = Part(mesh=mesh, name=name, face_ids=face_ids)
         _fit_and_set_primitive(part)
@@ -808,8 +832,8 @@ class PartDetailView(APIView):
         if name is not None:
             part.name = name.strip() or part.name
         if face_ids is not None:
-            if not isinstance(face_ids, list) or not face_ids:
-                return Response({'detail': "'face_ids' doit être une liste non vide."}, status=status.HTTP_400_BAD_REQUEST)
+            if error := _face_ids_error(face_ids, part.mesh):
+                return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
             part.face_ids = face_ids
             # Repeinte à la main : ce n'est plus une suggestion brute non retouchée.
             part.suggested = False
@@ -839,6 +863,36 @@ def _creates_cycle(parent: Part, child: Part) -> bool:
         if joint is None:
             return False
         current = joint.parent_part
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _joint_geometry_error(data: dict, limit_min, limit_max) -> str | None:
+    """Ce que l'aperçu cinématique sait animer : un axe (origine + direction
+    non nulle, trois nombres chacune) et des bornes numériques dans l'ordre.
+    Sans ce contrôle, une direction nulle figeait la jointure, des bornes
+    inversées donnaient un curseur inutilisable, et un texte finissait en
+    erreur 500 sur les champs flottants.
+
+    `data` : les seuls champs reçus (une modification partielle ne revalide
+    pas ce qu'elle ne touche pas) ; `limit_min`/`limit_max` : les bornes telles
+    qu'elles seront enregistrées, pour en vérifier l'ordre."""
+    for field in ('axis_origin', 'axis_direction'):
+        if field not in data:
+            continue
+        vector = data[field]
+        if not isinstance(vector, list) or len(vector) != 3 or not all(_is_number(v) for v in vector):
+            return f"'{field}' doit être une liste de trois nombres."
+        if field == 'axis_direction' and not any(vector):
+            return "'axis_direction' ne peut pas être le vecteur nul."
+    for field in ('limit_min', 'limit_max'):
+        if data.get(field) is not None and not _is_number(data[field]):
+            return f"'{field}' doit être un nombre (ou vide)."
+    if _is_number(limit_min) and _is_number(limit_max) and limit_min > limit_max:
+        return "'limit_min' doit être inférieure ou égale à 'limit_max'."
+    return None
 
 
 class JointListCreateView(APIView):
@@ -883,12 +937,17 @@ class JointListCreateView(APIView):
         if joint_type not in dict(Joint.TYPE_CHOICES):
             return Response({'detail': "'joint_type' invalide."}, status=status.HTTP_400_BAD_REQUEST)
 
+        geometry = {
+            'axis_origin': request.data.get('axis_origin') or [0, 0, 0],
+            'axis_direction': request.data.get('axis_direction') or [0, 0, 1],
+            'limit_min': request.data.get('limit_min'),
+            'limit_max': request.data.get('limit_max'),
+        }
+        if error := _joint_geometry_error(geometry, geometry['limit_min'], geometry['limit_max']):
+            return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+
         joint = Joint.objects.create(
-            parent_part=parent, child_part=child, joint_type=joint_type,
-            axis_origin=request.data.get('axis_origin') or [0, 0, 0],
-            axis_direction=request.data.get('axis_direction') or [0, 0, 1],
-            limit_min=request.data.get('limit_min'),
-            limit_max=request.data.get('limit_max'),
+            parent_part=parent, child_part=child, joint_type=joint_type, **geometry,
         )
         return Response(JointSerializer(joint).data, status=status.HTTP_201_CREATED)
 
@@ -903,9 +962,16 @@ class JointDetailView(APIView):
             if request.data['joint_type'] not in dict(Joint.TYPE_CHOICES):
                 return Response({'detail': "'joint_type' invalide."}, status=status.HTTP_400_BAD_REQUEST)
             joint.joint_type = request.data['joint_type']
-        for field in ('axis_origin', 'axis_direction', 'limit_min', 'limit_max'):
-            if field in request.data:
-                setattr(joint, field, request.data[field])
+        received = {
+            field: request.data[field]
+            for field in ('axis_origin', 'axis_direction', 'limit_min', 'limit_max')
+            if field in request.data
+        }
+        if error := _joint_geometry_error(received, received.get('limit_min', joint.limit_min),
+                                          received.get('limit_max', joint.limit_max)):
+            return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+        for field, value in received.items():
+            setattr(joint, field, value)
         joint.save()
         return Response(JointSerializer(joint).data)
 
@@ -1007,7 +1073,8 @@ class MediaView(APIView):
         except FileNotFoundError:
             return Response(status=status.HTTP_404_NOT_FOUND)
         except storage_client.StorageClientError as exc:
-            return Response({'detail': f'Stockage indisponible : {exc}'},
+            logger.warning('Lecture storage échouée : %s', exc)
+            return Response({'detail': StorageUnavailable.default_detail},
                             status=status.HTTP_502_BAD_GATEWAY)
         return StreamingHttpResponse(
             upstream.iter_content(chunk_size=65536),
@@ -1046,8 +1113,13 @@ class PhotoRegionsView(APIView):
             )
         try:
             facade.ensure_photo_regions(photo)
-        except Exception as exc:
-            return Response({'detail': f"Échec de la segmentation 2D : {exc}"},
+        except storage_client.StorageClientError:
+            raise  # 502 « Stockage indisponible » (api_exception_handler)
+        except Exception:
+            # Message fixe : le texte de l'exception (chemins, trace du modèle) reste au journal.
+            logger.exception('Segmentation 2D échouée pour la photo %s', photo.pk)
+            return Response({'detail': "Échec de la segmentation 2D de cette photo. Réessayez ; "
+                                       "si l'échec persiste, choisissez une autre photo."},
                              status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(PhotoSerializer(photo).data)
 
@@ -1600,7 +1672,10 @@ class PublicAssemblyMeshFileView(APIView):
         except FileNotFoundError:
             return Response(status=status.HTTP_404_NOT_FOUND)
         except storage_client.StorageClientError as exc:
-            return Response({'detail': f'Stockage indisponible : {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+            # Route publique : rien de l'erreur d'origine (adresse interne) ne sort.
+            logger.warning('Lecture storage échouée (route publique) : %s', exc)
+            return Response({'detail': StorageUnavailable.default_detail},
+                            status=status.HTTP_502_BAD_GATEWAY)
         return StreamingHttpResponse(
             upstream.iter_content(chunk_size=65536),
             content_type=upstream.headers.get('Content-Type', 'application/octet-stream'),

@@ -241,6 +241,12 @@
       <!-- ── Résolution (Job CAD_ASSEMBLE) ───────────────────────────────────── -->
       <section class="card">
         <h3>Résolution (Job CAD_ASSEMBLE)</h3>
+        @if (!project.parent_project) {
+          <p class="hint">
+            À savoir : une fois résolu, cet assemblage est publié sans compte (nom, description,
+            glTF et STEP) par l'API publique de l'atelier.
+          </p>
+        }
 
         @if (activeAssembleJob(); as job) {
           <div class="job-progress">
@@ -967,6 +973,13 @@
               <button type="button" class="badge" (click)="downloadMedia(mesh.step_file)">Télécharger le STEP</button>
             }
           </div>
+        }
+        @if (project.photo_count > 0 && !project.has_resolved_poses) {
+          <p class="hint">
+            Le module Bâtiments n'est pas disponible pour ce projet : ses photos n'ont pas de pose
+            caméra. Il lui faut une reconstruction faite ici en mode Photo (un maillage importé depuis
+            un autre logiciel n'en apporte pas).
+          </p>
         }
 
         <app-mesh-viewer [meshUrl]="url"></app-mesh-viewer>

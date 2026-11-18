@@ -57,6 +57,11 @@ export class BatimentsComponent implements OnDestroy {
 
   readonly selectableProjects = computed(() => this.projects().filter((p) => p.has_resolved_poses));
 
+  /** Projets à photos mais sans pose caméra : absents de la liste, on dit pourquoi (lot 3). */
+  readonly projectsWithoutPoses = computed(() =>
+    this.projects().filter((p) => !p.has_resolved_poses && p.photo_count > 0),
+  );
+
   readonly latestMesh = computed(() => {
     const meshes = this.project()?.meshes ?? [];
     return meshes.length > 0 ? meshes[0] : null;
@@ -190,7 +195,10 @@ export class BatimentsComponent implements OnDestroy {
   }
 
   deleteLabel(label: PhotoLabel): void {
-    this.api.deletePhotoLabel(label.id).subscribe({ next: () => this.reloadLabels(label.photo) });
+    this.api.deletePhotoLabel(label.id).subscribe({
+      next: () => this.reloadLabels(label.photo),
+      error: (err) => this.error.set(err?.error?.detail ?? 'Échec de la suppression du label.'),
+    });
   }
 
   private reloadLabels(photoId: number): void {

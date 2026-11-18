@@ -176,13 +176,23 @@ export class ImpressionComponent implements OnDestroy {
     const measurement = this.pendingMeasurement();
     const id = this.selectedProjectId();
     if (!measurement || !id || !this.realDistanceMeters || this.realDistanceMeters <= 0) return;
+    // Deux clics sur le même point : la division donnerait Infinity, que JSON
+    // envoie comme null — l'échelle serait effacée au lieu d'être enregistrée.
+    if (!(measurement.meshDistance > 0)) {
+      this.error.set('Les deux points cliqués sont confondus : choisis deux points distincts.');
+      return;
+    }
     const scale = this.realDistanceMeters / measurement.meshDistance;
+    this.error.set(null);
     this.api.updateProject(id, { scale_meters_per_unit: scale }).subscribe({
       next: () => {
         this.calibrationMode.set(false);
         this.pendingMeasurement.set(null);
         this.realDistanceMeters = null;
         this.reload();
+      },
+      error: (err) => {
+        this.error.set(err?.error?.scale_meters_per_unit?.[0] ?? "Échec de l'enregistrement de l'échelle.");
       },
     });
   }

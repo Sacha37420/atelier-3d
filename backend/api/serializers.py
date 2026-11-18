@@ -98,6 +98,14 @@ class ProjectSerializer(serializers.ModelSerializer):
                   'my_role', 'shared_with_count', 'created_at', 'updated_at']
         read_only_fields = ['assembly_status', 'parent_project', 'owner_email', 'created_at', 'updated_at']
 
+    def validate_scale_meters_per_unit(self, value):
+        # Multiplie chaque coordonnée à l'export (repair.export_print_file) :
+        # nulle, la pièce s'écrase en un point ; négative, elle sort en miroir.
+        # Vide (null) reste permis : « pas encore calibré ».
+        if value is not None and value <= 0:
+            raise serializers.ValidationError("L'échelle doit être un nombre strictement positif.")
+        return value
+
     def get_my_role(self, obj: Project):
         if role_of := self.context.get('role_of'):
             return role_of(obj)

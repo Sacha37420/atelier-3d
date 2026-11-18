@@ -183,7 +183,7 @@ button.badge {
   width: 22px; height: 22px;
   border: none;
   border-radius: var(--radius-full);
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--scrim);
   color: var(--on-solid);
   cursor: pointer;
   font-size: 12px;

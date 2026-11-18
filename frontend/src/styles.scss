@@ -40,6 +40,8 @@
   /* Texte clair fixe pour poser sur un aplat sombre (badge/bouton sur
      vignette photo) — ne s'inverse jamais avec le thème. */
   --on-solid: #ffffff;
+  /* Voile sombre fixe sous ce texte clair (pastille, bouton posé sur une vignette). */
+  --scrim: rgba(0, 0, 0, 0.6);
 }
 
 @media (prefers-color-scheme: dark) {

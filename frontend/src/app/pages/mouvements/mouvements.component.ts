@@ -179,7 +179,10 @@ export class MouvementsComponent {
     if (!window.confirm(`Supprimer la partie « ${part.name} » ? Les jointures qui l'utilisent seront aussi supprimées.`)) {
       return;
     }
-    this.api.deletePart(part.id).subscribe({ next: () => this.reloadPartsAndJoints(mesh.id) });
+    this.api.deletePart(part.id).subscribe({
+      next: () => this.reloadPartsAndJoints(mesh.id),
+      error: (err) => this.error.set(err?.error?.detail ?? 'Échec de la suppression de la partie.'),
+    });
   }
 
   suggestParts(): void {
@@ -261,6 +264,11 @@ export class MouvementsComponent {
   deleteJoint(joint: Joint): void {
     const mesh = this.latestMesh();
     if (!mesh) return;
-    this.api.deleteJoint(joint.id).subscribe({ next: () => this.reloadPartsAndJoints(mesh.id) });
+    const names = `${this.partName(joint.parent_part)} → ${this.partName(joint.child_part)}`;
+    if (!window.confirm(`Supprimer la jointure « ${names} » ?`)) return;
+    this.api.deleteJoint(joint.id).subscribe({
+      next: () => this.reloadPartsAndJoints(mesh.id),
+      error: (err) => this.error.set(err?.error?.detail ?? 'Échec de la suppression de la jointure.'),
+    });
   }
 }

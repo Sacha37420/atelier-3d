@@ -29,12 +29,23 @@ from PIL import Image, ImageOps
 import build123d as bd
 
 from . import cad_assemble as cad_assemble_module
-from . import storage_backend
+from . import storage_backend, storage_client
 from . import cad_build as cad_build_module
 from . import facade as facade_module
 from . import repair as repair_module
 from .models import Job, Mesh, Photo, PhotoLabel, Project, SemanticClass
 from .reconstruction import PRESETS, DEFAULT_PRESET
+
+
+#: Message d'un job interrompu par storage : l'erreur d'origine (requests) porte
+#: l'adresse interne de storage, et `Job.message` est lu par tout membre du projet.
+STORAGE_FAILURE_MESSAGE = 'Échec : storage injoignable ou en erreur. Relancez le job dans quelques instants.'
+
+
+def _failure_message(exc: Exception) -> str:
+    if isinstance(exc, storage_client.StorageClientError):
+        return STORAGE_FAILURE_MESSAGE
+    return str(exc)
 
 
 class ReconstructionError(Exception):
@@ -276,7 +287,7 @@ def run_reconstruction(self, job_id: int):
             ),
         )
     except Exception as exc:
-        job.set_state(status=Job.ERROR, message=str(exc))
+        job.set_state(status=Job.ERROR, message=_failure_message(exc))
 
 
 @shared_task(bind=True)
@@ -366,7 +377,7 @@ def run_mesh_import(self, job_id: int):
             ),
         )
     except Exception as exc:
-        job.set_state(status=Job.ERROR, message=str(exc))
+        job.set_state(status=Job.ERROR, message=_failure_message(exc))
 
 
 @shared_task(bind=True)
@@ -442,7 +453,7 @@ def run_repair(self, job_id: int):
             ),
         )
     except Exception as exc:
-        job.set_state(status=Job.ERROR, message=str(exc))
+        job.set_state(status=Job.ERROR, message=_failure_message(exc))
 
 
 @shared_task(bind=True)
@@ -551,7 +562,7 @@ def run_facade_segmentation(self, job_id: int):
             ),
         )
     except Exception as exc:
-        job.set_state(status=Job.ERROR, message=str(exc))
+        job.set_state(status=Job.ERROR, message=_failure_message(exc))
 
 
 @shared_task(bind=True)
@@ -643,7 +654,7 @@ def run_cad_build(self, job_id: int):
             ),
         )
     except Exception as exc:
-        job.set_state(status=Job.ERROR, message=str(exc))
+        job.set_state(status=Job.ERROR, message=_failure_message(exc))
 
 
 @shared_task(bind=True)
@@ -762,4 +773,4 @@ def run_cad_assemble(self, job_id: int):
     except Exception as exc:
         project.assembly_status = Project.ASSEMBLY_ERROR
         project.save(update_fields=['assembly_status'])
-        job.set_state(status=Job.ERROR, message=str(exc))
+        job.set_state(status=Job.ERROR, message=_failure_message(exc))

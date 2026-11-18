@@ -21,6 +21,16 @@
   }
 
   @if (!selectedProjectId()) {
+    @if (projectsWithoutPoses().length > 0) {
+      <p class="hint">
+        Absents de la liste faute de pose caméra sur leurs photos :
+        @for (p of projectsWithoutPoses(); track p.id; let last = $last) {
+          {{ p.name }}{{ last ? '.' : ', ' }}
+        }
+        Bâtiments a besoin d'une reconstruction faite ici en mode Photo ; un maillage importé
+        (« Photos client ») n'apporte pas ces poses.
+      </p>
+    }
     @if (selectableProjects().length === 0) {
       <p class="muted">
         Aucun projet n'a de photo à pose caméra résolue — lance d'abord une reconstruction depuis la
